@@ -1,0 +1,55 @@
+# ===== Dependencies =====
+node_modules/
+.pnp
+.pnp.js
+
+# ===== Builds =====
+BACKEND/dist/
+FRONETEND/.build/
+FRONETEND/.next/
+FRONETEND/out/
+FRONETEND/tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# ===== Runtime data (SQLite DBs, journals, logs) =====
+BACKEND/runtime/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.log
+
+# ===== Environment variables =====
+.env
+.env.local
+.env.*.local
+BACKEND/.env
+FRONETEND/.env
+
+# ===== Testing / coverage =====
+coverage/
+.nyc_output/
+
+# ===== Caches =====
+.cache/
+.eslintcache
+.stylelintcache
+.v0-trash/
+.snowflake/
+.vercel/
+
+# ===== OS / editor junk =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.swp
+*.swo
+.idea/
+.vscode/
+!.vscode/extensions.json
+
+# ===== Local archives / one-off scripts =====
+*.zip
+*.bat
