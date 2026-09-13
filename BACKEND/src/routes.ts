@@ -6,8 +6,9 @@ import { logger } from './logger';
 import type { ProcessManager } from './processManager';
 import { repository } from './repository';
 import { sampleSystemResources } from './systemMonitor';
+import { listExternalSessionsForWorkspace, scanExternalSessions } from './sessionDiscovery';
 import { cleanupProbeDbs } from './utils/dbCleanup';
-import { agentCreateSchema, launchSessionSchema, workspaceCreateSchema } from './validation';
+import { agentCreateSchema, assignmentSchema, externalResumeSchema, launchSessionSchema, workspaceCreateSchema } from './validation';
 
 export function createApiRouter(processManager: ProcessManager): Router {
   const router = express.Router();
@@ -18,6 +19,7 @@ export function createApiRouter(processManager: ProcessManager): Router {
     res.json({
       workspaces: repository.listWorkspaces(),
       agentDefinitions: repository.listAgentDefinitions().filter((agent) => agent.enabled),
+      assignments: repository.listAssignments(),
       sessions: repository.listSessions(),
       runningSessionIds,
       events: repository.listEvents(100),
@@ -63,7 +65,57 @@ export function createApiRouter(processManager: ProcessManager): Router {
     res.json({ cleaned: true, removed: cleanupProbeDbs() });
   });
 
+  router.get('/assignments', (_req, res) => res.json(repository.listAssignments()));
+  router.get('/agents/:id/assignments', (req, res) => {
+    res.json(repository.listAssignmentsForAgent(req.params.id));
+  });
+  router.post('/workspaces/:id/agents', (req, res, next) => {
+    try {
+      const parsed = assignmentSchema.pick({ agentDefinitionId: true }).parse(req.body);
+      res.status(201).json(repository.assignAgentToWorkspace(req.params.id, parsed.agentDefinitionId));
+    } catch (error) {
+      next(error);
+    }
+  });
+  router.delete('/workspaces/:id/agents/:agentDefinitionId', (req, res, next) => {
+    try {
+      res.json(repository.unassignAgentFromWorkspace(req.params.id, req.params.agentDefinitionId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get('/sessions', (_req, res) => res.json(repository.listSessions()));
+
+  // External sessions: past conversations the installed CLI agents wrote to
+  // their own local stores. coverage reports per-agent scan status so the UI
+  // can show honest "not scanned / no store found" states.
+  router.get('/external-sessions', (req, res) => {
+    const workspaces = repository.listWorkspaces();
+    const discovery = scanExternalSessions({
+      force: req.query.force === '1',
+      workspacePaths: workspaces.map((workspace) => workspace.path),
+    });
+    res.json({ coverage: discovery.coverage, sessions: discovery.sessions });
+  });
+  router.get('/workspaces/:id/external-sessions', (req, res) => {
+    const workspaces = repository.listWorkspaces();
+    const workspace = repository.getWorkspace(req.params.id);
+    const result = listExternalSessionsForWorkspace(workspace.id, workspaces, { force: req.query.force === '1' });
+    res.json(result);
+  });
+
+  // Resume a session found by the external scanner: maps the discovered
+  // agent key to a seeded agent definition and launches it with the
+  // definition's resume args + discovered session id.
+  router.post('/external-sessions/resume', async (req, res, next) => {
+    try {
+      const parsed = externalResumeSchema.parse(req.body);
+      res.json(await processManager.launchExternalResume(parsed.agentKey, parsed.agentSessionId, parsed.workspaceId));
+    } catch (error) {
+      next(error);
+    }
+  });
   router.get('/sessions/:id/events', (req, res) => res.json(repository.listSessionEvents(req.params.id)));
   router.post('/sessions', async (req, res, next) => {
     try {

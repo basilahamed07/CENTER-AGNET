@@ -12,7 +12,7 @@ export const AGENT_STATUSES = [
 ] as const;
 
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
-export type LauncherType = 'direct' | 'cmd' | 'bat';
+export type LauncherType = 'direct' | 'cmd' | 'bat' | 'shell';
 export type ResumeStrategy = 'none' | 'appendArgs' | 'command';
 
 export interface Workspace {
@@ -69,6 +69,13 @@ export interface AgentSession {
   memory: number;
   stuck_score: number;
   stuck_confidence: 'none' | 'low' | 'medium' | 'high';
+}
+
+export interface WorkspaceAgentAssignment {
+  id: string;
+  workspace_id: string;
+  agent_definition_id: string;
+  created_at: string;
 }
 
 export interface AppEvent<T = unknown> {

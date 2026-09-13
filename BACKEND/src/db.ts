@@ -3,6 +3,13 @@ import fs from 'fs';
 import path from 'path';
 import { logger } from './logger';
 
+// Windows default DELETE journal mode caused SQLITE_IOERR_DELETE in this
+// environment, so it pins TRUNCATE. POSIX filesystems are fine with WAL,
+// which gives better concurrency.
+function preferredJournalMode() {
+  return process.platform === 'win32' ? 'TRUNCATE' : 'WAL';
+}
+
 function candidateDbPaths(): string[] {
   if (process.env.MANAGER_DB_PATH) return [process.env.MANAGER_DB_PATH];
 
@@ -27,7 +34,7 @@ function openDatabase() {
     try {
       const database = new Database(candidate);
       try {
-        database.pragma('journal_mode = TRUNCATE');
+        database.pragma(`journal_mode = ${preferredJournalMode()}`);
       } catch (error) {
         logger.warn('sqlite journal mode change unavailable for candidate', { candidate, error: String(error) });
       }
@@ -142,6 +149,20 @@ export function initDb() {
   db.prepare('CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON agent_sessions(workspace_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_sessions_status ON agent_sessions(status)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, created_at)').run();
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS workspace_agent_assignments (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      agent_definition_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(workspace_id) REFERENCES workspaces(id),
+      FOREIGN KEY(agent_definition_id) REFERENCES agent_definitions(id),
+      UNIQUE(workspace_id, agent_definition_id)
+    )
+  `).run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_assignments_workspace ON workspace_agent_assignments(workspace_id)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_assignments_agent ON workspace_agent_assignments(agent_definition_id)').run();
+
   db.prepare("INSERT OR IGNORE INTO migrations (id, name) VALUES (1, 'initial_phase_1_schema')").run();
 
   logger.info('database initialized', { path: DB_PATH });

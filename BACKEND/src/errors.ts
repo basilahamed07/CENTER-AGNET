@@ -11,3 +11,7 @@ export class AppError extends Error {
 export function notFound(entity: string): AppError {
   return new AppError(404, `${entity} not found`, 'NOT_FOUND');
 }
+
+export function badRequest(message: string): AppError {
+  return new AppError(400, message, 'BAD_REQUEST');
+}

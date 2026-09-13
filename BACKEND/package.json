@@ -7,7 +7,7 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "start:detached": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-detached.ps1",
+    "start:detached": "node scripts/start-detached.cjs",
     "test": "npm run build && node --test dist/tests/*.test.js"
   },
   "keywords": [],
@@ -28,5 +28,9 @@
     "pidusage": "^4.0.1",
     "socket.io": "^4.8.3",
     "zod": "^4.5.4"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "node-pty@1.1.0": true
   }
 }

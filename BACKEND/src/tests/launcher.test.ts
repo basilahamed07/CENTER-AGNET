@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type { AgentDefinition } from '../domain';
-import { buildResumeArgs, buildSpawnSpec, validateLauncher } from '../launcher';
+import { buildResumeArgs, buildSpawnSpec, isWindows, validateLauncher } from '../launcher';
 import { agentCreateSchema } from '../validation';
 
 function definition(overrides: Partial<AgentDefinition>): AgentDefinition {
@@ -27,30 +27,61 @@ function definition(overrides: Partial<AgentDefinition>): AgentDefinition {
   };
 }
 
-test('direct command name resolves through cmd.exe on Windows', () => {
+test('direct command name resolves through cmd.exe on Windows', { skip: !isWindows() ? 'Windows-only behavior' : false }, () => {
   const spec = buildSpawnSpec(definition({}));
   assert.match(spec.file.toLowerCase(), /cmd\.exe$/);
   assert.equal(spec.args, '/d /s /k "node --version"');
   assert.equal(spec.env.LOCAL_ONLY, '1');
 });
 
-test('cmd.exe direct command launches the shell itself', () => {
+test('direct command name resolves on PATH and wraps in POSIX shell', { skip: isWindows() ? 'POSIX-only behavior' : false }, () => {
+  const spec = buildSpawnSpec(definition({}));
+  // node is guaranteed on PATH where tests run.
+  assert.ok(path.isAbsolute(spec.file), `expected absolute shell path, got ${spec.file}`);
+  assert.equal(spec.args[0], '-c');
+  assert.ok(String(spec.args[1]).includes('--version'));
+  assert.equal(spec.env.LOCAL_ONLY, '1');
+});
+
+test('direct command not on PATH is rejected on POSIX', { skip: isWindows() ? 'POSIX-only behavior' : false }, () => {
+  assert.throws(() => buildSpawnSpec(definition({ command: 'definitely-missing-agent-cli-xyz' })), /not found on PATH/);
+});
+
+test('cmd.exe direct command launches the shell itself', { skip: !isWindows() ? 'Windows-only behavior' : false }, () => {
   const spec = buildSpawnSpec(definition({ command: 'cmd.exe', default_args: '[]' }));
   assert.match(spec.file.toLowerCase(), /cmd\.exe$/);
   assert.deepEqual(spec.args, ['/k']);
 });
 
-test('bat launcher is executed unchanged through cmd.exe', () => {
+test('bat launcher is executed unchanged through cmd.exe', { skip: !isWindows() ? 'Windows-only behavior' : false }, () => {
   const file = path.join(os.tmpdir(), `agent-${Date.now()}.bat`);
   fs.writeFileSync(file, '@echo off\r\necho ok\r\n');
   const spec = buildSpawnSpec(definition({ command: file, launcher_type: 'bat', default_args: '["--flag"]' }));
   assert.match(spec.file.toLowerCase(), /cmd\.exe$/);
-  assert.equal(spec.args, `/d /s /k "\"${file}\" --flag"`);
+  assert.equal(spec.args, `/d /s /k "\\"${file}\\" --flag"`);
+  fs.unlinkSync(file);
+});
+
+test('shell launcher runs .sh through the POSIX shell', { skip: isWindows() ? 'POSIX-only behavior' : false }, () => {
+  const file = path.join(os.tmpdir(), `agent-${Date.now()}.sh`);
+  fs.writeFileSync(file, '#!/bin/sh\necho ok\n');
+  fs.chmodSync(file, 0o755);
+  const spec = buildSpawnSpec(definition({ command: file, launcher_type: 'shell', default_args: '["--flag"]' }));
+  assert.ok(path.isAbsolute(spec.file), `expected absolute shell path, got ${spec.file}`);
+  assert.equal(spec.args[0], '-c');
+  fs.unlinkSync(file);
+});
+
+test('shell launcher requires .sh extension', () => {
+  const file = path.join(os.tmpdir(), `agent-${Date.now()}.txt`);
+  fs.writeFileSync(file, 'echo ok\n');
+  assert.throws(() => validateLauncher(definition({ command: file, launcher_type: 'shell' })), /extension must be \.sh/);
   fs.unlinkSync(file);
 });
 
 test('missing cmd launcher is rejected', () => {
-  assert.throws(() => validateLauncher(definition({ command: 'C:\\missing\\agent.cmd', launcher_type: 'cmd' })), /does not exist/);
+  const missing = path.join(os.tmpdir(), `missing-${Date.now()}.cmd`);
+  assert.throws(() => validateLauncher(definition({ command: missing, launcher_type: 'cmd' })), /does not exist/);
 });
 
 test('resume args append generic session id argument', () => {
@@ -63,8 +94,10 @@ test('resume args append generic session id argument', () => {
   assert.deepEqual(args, ['resume', '--session', 'abc123']);
 });
 
-test('agent create validation supports cmd and bat launchers', () => {
+test('agent create validation supports cmd, bat and shell launchers', () => {
   const parsed = agentCreateSchema.parse({ displayName: 'Codex', command: 'codex.cmd', launcherType: 'cmd' });
   assert.equal(parsed.launcherType, 'cmd');
   assert.deepEqual(parsed.defaultArgs, []);
+  const sh = agentCreateSchema.parse({ displayName: 'Helper', command: '/usr/local/bin/helper.sh', launcherType: 'shell' });
+  assert.equal(sh.launcherType, 'shell');
 });

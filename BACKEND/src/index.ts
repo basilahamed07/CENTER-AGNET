@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
+import { seedAgentDefinitions } from './agentSeed';
 import { initDb, markInterruptedSessionsResumable } from './db';
 import { EventBus } from './eventBus';
 import { createApiRouter, errorMiddleware } from './routes';
@@ -38,6 +39,9 @@ process.on('unhandledRejection', (reason) => {
 
 initDb();
 markInterruptedSessionsResumable();
+// Register the 15 installer agents (idempotent) so their definitions exist
+// before the first /api/state read; disabled automatically when not on PATH.
+seedAgentDefinitions();
 
 const events = new EventBus();
 const processManager = new ProcessManager(events);

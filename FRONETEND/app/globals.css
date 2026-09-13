@@ -229,3 +229,61 @@ button { cursor: pointer; }
 .stat-card strong small { -webkit-text-fill-color: #738195; }
 @keyframes live-blink { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .mini-live, .live-badge span, .terminal-green { animation: live-blink 1.6s ease-in-out infinite; }
+
+/* Error boundary fallback: contained failure view instead of a blank page. */
+.error-boundary-fallback { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin: 18px; padding: 16px 18px; background: #211b17; border: 1px solid #4c3727; border-radius: 8px; color: #dba56f; }
+.error-boundary-fallback p { margin: 0; font-size: 12px; }
+.error-boundary-fallback small { color: #9a7658; font-size: 10px; word-break: break-all; }
+.error-boundary-fallback .secondary-button { margin-top: 4px; }
+
+/* Toast variants: success (default) vs error. */
+.toast-error { color: #f5c1c7; background: #2b1216; border-color: #7a3641; }
+
+/* Drag & drop: registry → workspace assignment. */
+.agent-config-row { cursor: grab; }
+.agent-config-row:active { cursor: grabbing; }
+.agent-config-row.dragging { opacity: .45; }
+.drag-hint { margin: 0 10px 8px; padding: 7px 10px; border: 1px dashed #2d6a76; border-radius: 6px; color: #5dd9e8; background: #0d2229; font-size: 10px; text-align: center; }
+.workspace-item.drop-hover { background: #12353b; color: #e9eff7; outline: 1px dashed #51d5e6; outline-offset: -2px; box-shadow: inset 2px 0 0 var(--primary); }
+.workspace-agent-head .agent-delete-button { width: 22px; height: 22px; flex: 0 0 22px; margin-left: 8px; }
+
+/* ===== External sessions panel ===== */
+.external-sessions-panel { margin-top: 1.25rem; }
+.external-search {
+  background: #0d2229;
+  border: 1px solid #2d6a76;
+  border-radius: 8px;
+  color: #e9eff7;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.85rem;
+  min-width: 180px;
+}
+.external-search::placeholder { color: #5b7c85; }
+.external-session-list { display: flex; flex-direction: column; }
+.external-session-row {
+  display: flex; align-items: center; gap: 0.9rem;
+  padding: 0.65rem 0.25rem;
+  border-bottom: 1px solid rgba(83, 130, 143, 0.25);
+}
+.external-session-row:last-child { border-bottom: none; }
+.external-agent-badge {
+  flex-shrink: 0;
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: rgba(56, 189, 248, 0.12);
+  color: #5dd9e8;
+  border: 1px solid rgba(93, 217, 232, 0.35);
+  border-radius: 6px;
+  padding: 0.2rem 0.5rem;
+  min-width: 4.5rem; text-align: center;
+}
+.external-session-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.external-session-copy b { font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.external-session-copy small { opacity: 0.65; font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.external-session-actions { flex-shrink: 0; display: flex; align-items: center; }
+.external-coverage {
+  display: flex; align-items: center; gap: 0.5rem;
+  margin-top: 0.9rem; padding-top: 0.75rem;
+  border-top: 1px dashed rgba(83, 130, 143, 0.4);
+  font-size: 0.72rem; opacity: 0.6;
+}

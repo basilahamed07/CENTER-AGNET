@@ -8,7 +8,7 @@ export const workspaceCreateSchema = z.object({
 export const agentCreateSchema = z.object({
   displayName: z.string().min(1).max(120),
   command: z.string().min(1).max(1000),
-  launcherType: z.enum(['direct', 'cmd', 'bat']),
+  launcherType: z.enum(['direct', 'cmd', 'bat', 'shell']),
   defaultArgs: z.array(z.string()).default([]),
   env: z.record(z.string(), z.string()).default({}),
   supportsResume: z.boolean().default(false),
@@ -21,6 +21,17 @@ export const agentCreateSchema = z.object({
 export const launchSessionSchema = z.object({
   workspaceId: z.string().min(1),
   agentDefinitionId: z.string().min(1),
+});
+
+export const assignmentSchema = launchSessionSchema;
+
+export const externalResumeSchema = z.object({
+  /** Scanner agent key, e.g. 'claude' | 'codex' | 'pi'. Maps to def-<key>. */
+  agentKey: z.string().min(1).max(40),
+  /** Session id inside the agent's own store (UUID, ses_..., etc). */
+  agentSessionId: z.string().min(1).max(200),
+  /** Managed workspace to launch the resumed agent in. */
+  workspaceId: z.string().min(1),
 });
 
 export const resizeSchema = z.object({

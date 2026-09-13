@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
-import type { AgentDefinition, AgentSession, AgentStatus, LauncherType, Workspace } from './domain';
+import type { AgentDefinition, AgentSession, AgentStatus, LauncherType, Workspace, WorkspaceAgentAssignment } from './domain';
 import { db } from './db';
-import { notFound } from './errors';
+import { badRequest, notFound } from './errors';
 
 export const repository = {
   listWorkspaces(): Workspace[] {
@@ -133,6 +133,52 @@ export const repository = {
         stopped_at: session.stopped_at ?? new Date().toISOString(),
       });
     }
+  },
+
+  listAssignments(): WorkspaceAgentAssignment[] {
+    return db.prepare(`
+      SELECT a.id, a.workspace_id, a.agent_definition_id, a.created_at
+      FROM workspace_agent_assignments a
+      JOIN workspaces w ON w.id = a.workspace_id
+      JOIN agent_definitions d ON d.id = a.agent_definition_id
+      WHERE w.archived = 0 AND d.enabled = 1
+      ORDER BY a.created_at
+    `).all() as WorkspaceAgentAssignment[];
+  },
+
+  listAssignmentsForAgent(agentDefinitionId: string): WorkspaceAgentAssignment[] {
+    this.getAgentDefinition(agentDefinitionId);
+    return db.prepare(`
+      SELECT a.id, a.workspace_id, a.agent_definition_id, a.created_at
+      FROM workspace_agent_assignments a
+      JOIN workspaces w ON w.id = a.workspace_id
+      JOIN agent_definitions d ON d.id = a.agent_definition_id
+      WHERE a.agent_definition_id = ? AND w.archived = 0 AND d.enabled = 1
+      ORDER BY a.created_at
+    `).all(agentDefinitionId) as WorkspaceAgentAssignment[];
+  },
+
+  assignAgentToWorkspace(workspaceId: string, agentDefinitionId: string): WorkspaceAgentAssignment {
+    this.getWorkspace(workspaceId);
+    const agent = this.getAgentDefinition(agentDefinitionId);
+    if (!agent.enabled) throw badRequest('Agent is disabled and cannot be assigned');
+    const id = randomUUID();
+    db.prepare(`
+      INSERT INTO workspace_agent_assignments (id, workspace_id, agent_definition_id)
+      VALUES (@id, @workspaceId, @agentDefinitionId)
+      ON CONFLICT(workspace_id, agent_definition_id) DO NOTHING
+    `).run({ id, workspaceId, agentDefinitionId });
+    const existing = db.prepare('SELECT * FROM workspace_agent_assignments WHERE workspace_id = ? AND agent_definition_id = ?')
+      .get(workspaceId, agentDefinitionId) as WorkspaceAgentAssignment | undefined;
+    if (!existing) throw new Error('Assignment insert failed');
+    return existing;
+  },
+
+  unassignAgentFromWorkspace(workspaceId: string, agentDefinitionId: string): { removed: boolean } {
+    const result = db.prepare('DELETE FROM workspace_agent_assignments WHERE workspace_id = ? AND agent_definition_id = ?')
+      .run(workspaceId, agentDefinitionId);
+    if (result.changes === 0) throw notFound('Assignment');
+    return { removed: true };
   },
 
   clearSessionHistory() {
