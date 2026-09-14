@@ -128,7 +128,10 @@ Every arrow is also a notification event (Phase-1 settings UI gains an "Orchestr
 **Key decision: the planner is a CLI agent, not a service.**
 
 1. User submits a goal (title + description + workspace).
-2. `PlannerService` launches `claude` (or configured planner agent) via Phase-1 `launch()` in
+2. **The planner agent is chosen PER GOAL** (owner decision, 2026-09-15): the goal-creation
+   form has a planner dropdown (enabled planner-capable agents from the registry), with a
+   configurable default in settings. No silent default agent.
+3. `PlannerService` launches the chosen planner via Phase-1 `launch()` in
    the workspace root with a **planner system prompt** that demands output in a strict JSON
    schema (`PlanSchema`) — streamed into the session as usual (user can watch it live).
 3. A small **plan extractor** tails the session ring buffer for the fenced
@@ -174,8 +177,11 @@ goals (
              'running','verifying','awaiting_review','merging','complete',
              'failed','cancelled')),
   planner_session_id,          -- links to the agent_sessions row of the planner run
+  planner_definition_id,       -- agent_definitions.id — chosen PER GOAL in the UI
   plan_json,                   -- approved plan snapshot
   concurrency_limit INTEGER DEFAULT 3,
+  attempt_budget INTEGER DEFAULT 10,   -- failed attempts → hard stop + notify
+  reviews_enabled INTEGER DEFAULT 1,   -- second-agent review per code task
   autonomy TEXT DEFAULT 'gated',     -- §10
   created_at, updated_at
 )
@@ -249,10 +255,16 @@ Reuses Phase-1 signals only:
 - *work-based* signal (optional, opt-in): `git status --porcelain` in the task worktree is
   unchanged for N minutes while status=running → "no file progress" hint shown to the human
 
-### 7.3 Failure & retry
+### 7.3 Failure & retry (with hard budget stop)
 ```
 onExit(task):
   CRASHED or non-zero →
+    goal.failedAttempts++                      // goal-level counter
+    if goal.failedAttempts ≥ goal.attemptBudget (default 10):
+      PAUSE the goal: no new task launches; running tasks finish or are stopped;
+      status='failed'; HIGH-severity notification with the failure summary.
+      (Owner decision 2026-09-15: HARD STOP — runaway cost is unacceptable.)
+      Human resumes via /goals/:id/start after reviewing (budget resets on resume).
     attempts++
     if attempts ≤ maxRetries (default 2):
       relaunch in SAME worktree (work is kept!), prompt gets:
@@ -309,10 +321,11 @@ Two layers, both stored in `goal_tasks.verification_json`:
 ```
    Run **inside the task worktree** via the existing `execFile` patterns, 10-min timeout,
    output truncated to 50 KB into verification_json. Deterministic, cheap, replayable.
-2. **Agent review (optional per goal)** — a `review` task is auto-inserted after each `code`
-   task: a *different* agent is launched in the same worktree with the diff (via Phase-1
-   `getWorktreeDiff`) and a review prompt; its exit + a structured verdict fence are
-   recorded. Review agents never edit files (prompt-level constraint + post-hoc
+2. **Agent review — ON by default** (owner decision, 2026-09-15): every `code` task
+   automatically gets a `review` task inserted after it; a *different* agent is launched in
+   the same worktree with the diff (via Phase-1 `getWorktreeDiff`) and a review prompt; its
+   exit + a structured verdict fence are recorded. Goals may opt OUT via a per-goal toggle.
+   Review agents never edit files (prompt-level constraint + post-hoc
    `git status` check that the worktree is unchanged — violation → review discarded,
    event emitted).
 
@@ -336,7 +349,7 @@ silently destroy work."
 
 ### REST (under `/api/orchestrator`)
 ```
-POST /goals                      { workspaceId, title, description }
+POST /goals                      { workspaceId, title, description, plannerDefinitionId }
 GET  /goals/:id                  goal + tasks + timeline
 POST /goals/:id/plan             run planner
 POST /goals/:id/plan/approve     { editedPlan? }      ← Gate 1
@@ -413,8 +426,8 @@ goal-lifecycle scenarios; the full Phase-1 regression suite must stay green at e
 | Windows ConPTY still unverified | **Gate item** — P2 starts only after the manual pass |
 | Prompt-injection via repo content into planner | Planner runs read-only conceptually; Gate 1 review; never auto-merge on its output |
 
-Open questions for the owner:
-1. Default planner agent (claude vs codex)?
-2. Should `review` tasks be on by default, or opt-in per goal?
-3. Budget guardrail: hard stop on N task-attempts per goal?
+Open questions — **RESOLVED by owner, 2026-09-15:**
+1. Planner agent? → **Chosen per goal** via dropdown at goal creation (default configurable in settings)
+2. Review tasks? → **ON by default** for every code task; per-goal opt-out toggle
+3. Budget guardrail? → **Hard stop**: goal-level failed-attempt budget (default 10) pauses the goal and notifies; human resumes
 ```
