@@ -84,6 +84,30 @@ export interface WorkspaceAgentAssignment {
   created_at: string
 }
 
+/** One agent's isolated git worktree (branch agent/<task>). */
+export interface AgentWorktree {
+  id: string
+  workspace_id: string
+  agent_definition_id: string | null
+  session_id: string | null
+  path: string
+  branch: string
+  base_branch: string | null
+  task_name: string
+  created_at: string
+  removed_at: string | null
+}
+
+export interface WorktreeStatus {
+  worktree: AgentWorktree
+  branch: string
+  dirty: boolean
+  aheadOfBase: number
+  behindBase: number
+  changedFiles: Array<{ path: string; state: string }>
+  lastCommitSubject: string | null
+}
+
 export interface ManagerState {
   workspaces: Workspace[]
   agentDefinitions: AgentDefinition[]

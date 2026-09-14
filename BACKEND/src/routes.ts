@@ -1,14 +1,18 @@
 import type { Request, Response, NextFunction, Router } from 'express';
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
 import { AppError } from './errors';
 import { refreshWorkspaceGit } from './gitMonitor';
 import { logger } from './logger';
 import type { ProcessManager } from './processManager';
 import { repository } from './repository';
+import { badRequest } from './errors';
 import { sampleSystemResources } from './systemMonitor';
+import { createWorktree, getWorktreeDiff, getWorktreeStatus, listWorktrees, removeWorktree } from './worktreeManager';
 import { listExternalSessionsForWorkspace, scanExternalSessions } from './sessionDiscovery';
 import { cleanupProbeDbs } from './utils/dbCleanup';
-import { agentCreateSchema, assignmentSchema, externalResumeSchema, launchSessionSchema, workspaceCreateSchema } from './validation';
+import { agentCreateSchema, assignmentSchema, externalResumeSchema, launchSessionSchema, worktreeCreateSchema, worktreeRemoveSchema, workspaceCreateSchema } from './validation';
 
 export function createApiRouter(processManager: ProcessManager): Router {
   const router = express.Router();
@@ -30,7 +34,19 @@ export function createApiRouter(processManager: ProcessManager): Router {
   router.get('/workspaces', (_req, res) => res.json(repository.listWorkspaces()));
   router.post('/workspaces', (req, res) => {
     const parsed = workspaceCreateSchema.parse(req.body);
-    const workspace = repository.createWorkspace(parsed);
+    // Validate before persisting: a workspace pointing at a missing directory
+    // would fail later at launch time with a confusing PTY spawn error.
+    const resolved = path.resolve(parsed.path);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(resolved);
+    } catch {
+      throw badRequest(`Workspace path does not exist on this machine: ${resolved}`);
+    }
+    if (!stat.isDirectory()) {
+      throw badRequest(`Workspace path must be a directory: ${resolved}`);
+    }
+    const workspace = repository.createWorkspace({ ...parsed, path: resolved });
     void refreshWorkspaceGit(workspace.id);
     res.status(201).json(workspace);
   });
@@ -85,6 +101,48 @@ export function createApiRouter(processManager: ProcessManager): Router {
     }
   });
 
+  // ---- Worktrees (spec §18-23): one branch + dir per parallel agent ------
+  router.get('/workspaces/:id/worktrees', (req, res) => {
+    res.json(listWorktrees(req.params.id));
+  });
+
+  router.post('/workspaces/:id/worktrees', async (req, res, next) => {
+    try {
+      const parsed = worktreeCreateSchema.parse(req.body);
+      const worktree = await createWorktree({ workspaceId: req.params.id, ...parsed });
+      res.status(201).json(worktree);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/worktrees/:id/status', async (req, res, next) => {
+    try {
+      res.json(await getWorktreeStatus(req.params.id));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/worktrees/:id/diff', async (req, res, next) => {
+    try {
+      res.json({ diff: await getWorktreeDiff(req.params.id) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Removal never merges, deletes branches, or discards work (spec §20, §23):
+  // dirty worktrees require forceRemove after an explicit UI confirmation.
+  router.post('/worktrees/:id/remove', async (req, res, next) => {
+    try {
+      const parsed = worktreeRemoveSchema.parse(req.body ?? {});
+      res.json(await removeWorktree(req.params.id, parsed));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get('/sessions', (_req, res) => res.json(repository.listSessions()));
 
   // External sessions: past conversations the installed CLI agents wrote to
@@ -117,10 +175,14 @@ export function createApiRouter(processManager: ProcessManager): Router {
     }
   });
   router.get('/sessions/:id/events', (req, res) => res.json(repository.listSessionEvents(req.params.id)));
+  // The worktree this session runs in, if any (null when launched unisolated).
+  router.get('/sessions/:id/worktree', (req, res) => {
+    res.json(repository.findWorktreeBySession(req.params.id));
+  });
   router.post('/sessions', async (req, res, next) => {
     try {
       const parsed = launchSessionSchema.parse(req.body);
-      res.status(201).json(await processManager.launch(parsed.workspaceId, parsed.agentDefinitionId));
+      res.status(201).json(await processManager.launch(parsed.workspaceId, parsed.agentDefinitionId, undefined, parsed.worktreeId));
     } catch (error) {
       next(error);
     }

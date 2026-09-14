@@ -24,15 +24,20 @@ interface SeedAgent {
 }
 
 const SEED: SeedAgent[] = [
-  // --- Agents with verified per-id resume flags -----------------------------
+  // --- Agents with verified per-id resume flags (binary --help on this machine) ---
   { key: 'claude', name: 'Claude Code', command: 'claude', launcher: 'direct', resume: 'appendArgs', sessionArg: '--resume' },
   { key: 'codex', name: 'Codex CLI', command: 'codex', launcher: 'direct', resume: 'appendArgs', sessionArg: 'resume' },
-  { key: 'gemini', name: 'Gemini CLI', command: 'gemini', launcher: 'direct', resume: 'appendArgs', sessionArg: '-r' },
   { key: 'pi', name: 'Pi Agent', command: 'pi', launcher: 'direct', resume: 'appendArgs', sessionArg: '--session' },
-  { key: 'aider', name: 'Aider', command: 'aider', launcher: 'direct', resume: 'appendArgs', sessionArg: '--restore-chat-history' },
-  { key: 'continue', name: 'Continue CLI', command: 'cn', launcher: 'direct', resume: 'appendArgs', sessionArg: '--resume' },
-  { key: 'goose', name: 'Goose', command: 'goose', launcher: 'direct', resume: 'appendArgs', sessionArg: '--resume' },
-  { key: 'opencode', name: 'OpenCode', command: 'opencode', launcher: 'direct', resume: 'appendArgs', sessionArg: '--session' },
+  // --- Flags verified to exist but NOT per-id, or mismatched: per-id resume
+  // would launch a broken command, so resume is honestly disabled (spec §23:
+  // never guess). gemini -r takes "latest"/index; aider's flag takes no id;
+  // goose resumes via "goose session --resume" (name-based); opencode/cn
+  // resume the LAST session only.
+  { key: 'gemini', name: 'Gemini CLI', command: 'gemini', launcher: 'direct', resume: 'none', sessionArg: null },
+  { key: 'aider', name: 'Aider', command: 'aider', launcher: 'direct', resume: 'none', sessionArg: null },
+  { key: 'continue', name: 'Continue CLI', command: 'cn', launcher: 'direct', resume: 'none', sessionArg: null },
+  { key: 'goose', name: 'Goose', command: 'goose', launcher: 'direct', resume: 'none', sessionArg: null },
+  { key: 'opencode', name: 'OpenCode', command: 'opencode', launcher: 'direct', resume: 'none', sessionArg: null },
   // --- Agents without a verified per-id resume flag --------------------------
   { key: 'kilo', name: 'Kilo Code', command: 'kilo', launcher: 'direct', resume: 'none', sessionArg: null },
   { key: 'hermes', name: 'Hermes Agent', command: 'hermes', launcher: 'direct', resume: 'none', sessionArg: null },
@@ -63,6 +68,9 @@ export function seedAgentDefinitions(options: { forceEnabled?: boolean } = {}) {
       ON CONFLICT(id) DO UPDATE SET
         display_name = excluded.display_name,
         command = excluded.command,
+        resume_strategy = excluded.resume_strategy,
+        supports_resume = excluded.supports_resume,
+        session_id_arg = excluded.session_id_arg,
         updated_at = CURRENT_TIMESTAMP
     `).run({
       id,

@@ -8,15 +8,19 @@ import { EventBus } from './eventBus';
 import { AppError } from './errors';
 import { buildResumeArgs, buildSpawnSpec, isWindows } from './launcher';
 import { logger } from './logger';
+import { OutputRingBuffer } from './ringBuffer';
 import { repository } from './repository';
 
 const execFileAsync = promisify(execFile);
 
+const OUTPUT_BUFFER_MAX_BYTES = 512 * 1024; // Bounded replay memory per session (spec §29).
+
 interface ManagedPty {
   pty: IPty;
-  outputBuffer: string[];
+  outputBuffer: OutputRingBuffer;
   startedAt: number;
   lastOutputAt: number;
+  lastActivityBeaconAt: number;
 }
 
 export class ProcessManager {
@@ -33,13 +37,22 @@ export class ProcessManager {
   }
 
   getBufferedOutput(sessionId: string) {
-    return this.processes.get(sessionId)?.outputBuffer.join('') ?? '';
+    return this.processes.get(sessionId)?.outputBuffer.drain() ?? '';
   }
 
-  async launch(workspaceId: string, agentDefinitionId: string, resumeOfSessionId?: string): Promise<AgentSession> {
+  async launch(workspaceId: string, agentDefinitionId: string, resumeOfSessionId?: string, worktreeId?: string): Promise<AgentSession> {
     const workspace = repository.getWorkspace(workspaceId);
     const definition = repository.getAgentDefinition(agentDefinitionId);
     if (!definition.enabled) throw new AppError(400, 'Agent definition is disabled', 'AGENT_DISABLED');
+
+    // Isolated launch (spec §18): the session runs inside the agent's own
+    // git worktree so its edits never touch the main working tree.
+    const worktree = worktreeId ? repository.getWorktree(worktreeId) : null;
+    if (worktree) {
+      if (worktree.workspace_id !== workspaceId) throw new AppError(400, 'Worktree belongs to a different workspace', 'WORKTREE_MISMATCH');
+      if (worktree.removed_at) throw new AppError(400, 'Worktree was already removed', 'WORKTREE_REMOVED');
+    }
+    const workingDirectory = worktree?.path ?? workspace.path;
 
     const prior = resumeOfSessionId ? repository.getSession(resumeOfSessionId) : null;
     const resumeArgs = prior ? buildResumeArgs(definition, prior.agent_session_id) : [];
@@ -48,7 +61,7 @@ export class ProcessManager {
       workspaceId,
       agentDefinitionId,
       displayName: repository.nextSessionName(definition.display_name),
-      workingDirectory: workspace.path,
+      workingDirectory,
       resumeCapability: definition.supports_resume ? 'supported' : 'unsupported',
     });
 
@@ -60,30 +73,50 @@ export class ProcessManager {
         name: 'xterm-256color',
         cols: 120,
         rows: 32,
-        cwd: workspace.path,
+        cwd: workingDirectory,
         env: { ...process.env, ...spawnSpec.env },
         // ConPTY is Windows-only; on Linux/macOS node-pty auto-selects the
         // OpenPTY implementation. Forcing useConpty elsewhere breaks spawns.
         useConpty: isWindows() ? true : undefined,
       });
 
-      const managed: ManagedPty = { pty: child, outputBuffer: [], startedAt: Date.now(), lastOutputAt: Date.now() };
+      if (worktree) repository.linkWorktreeSession(worktree.id, session.id);
+
+      const managed: ManagedPty = { pty: child, outputBuffer: new OutputRingBuffer(OUTPUT_BUFFER_MAX_BYTES), startedAt: Date.now(), lastOutputAt: Date.now(), lastActivityBeaconAt: 0 };
       this.processes.set(session.id, managed);
 
       child.onData((data) => {
         managed.lastOutputAt = Date.now();
         managed.outputBuffer.push(data);
-        if (managed.outputBuffer.length > 400) managed.outputBuffer.splice(0, managed.outputBuffer.length - 400);
         repository.updateSession(session.id, {
           last_activity_at: new Date().toISOString(),
           last_terminal_activity_at: new Date().toISOString(),
         });
         this.events.publish('terminal.output', { data }, { sessionId: session.id, workspaceId });
+        // Lightweight beacon for clients NOT attached to this session's room:
+        // drives the unread-output dot without shipping terminal bytes to
+        // every connected client. Throttled to 1/s so a chatty agent cannot
+        // flood every browser tab (payload deliberately excludes the data).
+        if (managed.lastOutputAt - managed.lastActivityBeaconAt > 1000) {
+          managed.lastActivityBeaconAt = managed.lastOutputAt;
+          this.events.publish('terminal.activity', { sessionId: session.id, at: managed.lastOutputAt }, { sessionId: session.id, workspaceId });
+        }
       });
 
       child.onExit(({ exitCode }) => {
         this.processes.delete(session.id);
-        const status = exitCode === 0 ? 'STOPPED' : 'CRASHED';
+        // The session row may already be gone (maintenance clear while the
+        // process was still exiting) — never crash the manager from a callback.
+        let current: AgentSession | undefined;
+        try {
+          current = repository.getSession(session.id);
+        } catch {
+          return;
+        }
+        // A user-initiated force-terminate already recorded STOPPED before the
+        // async onExit fired; do not let it overwrite STOPPED with CRASHED
+        // (force-killed processes report a non-zero exit code).
+        const status = current.status === 'STOPPED' || exitCode === 0 ? 'STOPPED' : 'CRASHED';
         repository.setSessionStatus(session.id, status, {
           process_id: null,
           exit_code: exitCode,
@@ -149,13 +182,16 @@ export class ProcessManager {
     const managed = this.processes.get(sessionId);
     const session = repository.getSession(sessionId);
     if (!managed) return session;
-    managed.pty.kill();
-    this.processes.delete(sessionId);
-    this.events.publish('agent.force_terminated', {}, { sessionId, workspaceId: session.workspace_id });
-    return repository.setSessionStatus(sessionId, 'STOPPED', {
+    // Record STOPPED BEFORE killing: the async onExit callback reads the row
+    // and must see STOPPED, or it would overwrite this with CRASHED (killed
+    // PTYs exit non-zero). The map entry is left for onExit to remove.
+    const stopped = repository.setSessionStatus(sessionId, 'STOPPED', {
       process_id: null,
       stopped_at: new Date().toISOString(),
     });
+    managed.pty.kill();
+    this.events.publish('agent.force_terminated', {}, { sessionId, workspaceId: session.workspace_id });
+    return stopped;
   }
 
   async stopAll() {
@@ -222,23 +258,34 @@ export class ProcessManager {
         useConpty: isWindows() ? true : undefined,
       });
 
-      const managed: ManagedPty = { pty: child, outputBuffer: [], startedAt: Date.now(), lastOutputAt: Date.now() };
+      const managed: ManagedPty = { pty: child, outputBuffer: new OutputRingBuffer(OUTPUT_BUFFER_MAX_BYTES), startedAt: Date.now(), lastOutputAt: Date.now(), lastActivityBeaconAt: 0 };
       this.processes.set(session.id, managed);
 
       child.onData((data) => {
         managed.lastOutputAt = Date.now();
         managed.outputBuffer.push(data);
-        if (managed.outputBuffer.length > 400) managed.outputBuffer.splice(0, managed.outputBuffer.length - 400);
         repository.updateSession(session.id, {
           last_activity_at: new Date().toISOString(),
           last_terminal_activity_at: new Date().toISOString(),
         });
         this.events.publish('terminal.output', { data }, { sessionId: session.id, workspaceId });
+        // See launch(): same 1/s-throttled unread-output beacon.
+        if (managed.lastOutputAt - managed.lastActivityBeaconAt > 1000) {
+          managed.lastActivityBeaconAt = managed.lastOutputAt;
+          this.events.publish('terminal.activity', { sessionId: session.id, at: managed.lastOutputAt }, { sessionId: session.id, workspaceId });
+        }
       });
 
       child.onExit(({ exitCode }) => {
         this.processes.delete(session.id);
-        const status = exitCode === 0 ? 'STOPPED' : 'CRASHED';
+        // See launch(): tolerate a concurrently deleted session row.
+        let current: AgentSession | undefined;
+        try {
+          current = repository.getSession(session.id);
+        } catch {
+          return;
+        }
+        const status = current.status === 'STOPPED' || exitCode === 0 ? 'STOPPED' : 'CRASHED';
         repository.setSessionStatus(session.id, status, {
           process_id: null,
           exit_code: exitCode,

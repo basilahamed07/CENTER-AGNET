@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { api } from '@/lib/api'
-import type { AgentDefinition, AgentSession, LauncherType, Workspace } from '@/lib/types'
+import type { AgentDefinition, AgentSession, AgentWorktree, LauncherType, Workspace } from '@/lib/types'
 
 export function WorkspaceForm({ onDone, onError }: { onDone: () => void; onError: (message: string) => void }) {
   const [name, setName] = useState('')
@@ -60,6 +60,11 @@ export function AgentForm({ workspaceName, workspaceId, onDone, onError }: {
   const [launcherType, setLauncherType] = useState<LauncherType>('direct')
   const [supportsResume, setSupportsResume] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Isolation (spec §31): optionally create a git worktree + agent/<task>
+  // branch and launch the agent inside it, so parallel agents never edit
+  // the same working files.
+  const [isolate, setIsolate] = useState(false)
+  const [taskName, setTaskName] = useState('')
 
   // Auto-select the launcher type from the command's file extension as the
   // user types (kept in the change handler instead of a state-syncing effect).
@@ -74,12 +79,17 @@ export function AgentForm({ workspaceName, workspaceId, onDone, onError }: {
   async function submit(event: React.FormEvent) {
     event.preventDefault()
     if (!displayName.trim() || !command.trim()) return
+    if (isolate && !taskName.trim()) return
     setBusy(true)
     try {
       const agent = await api<AgentDefinition>('/api/agents', { method: 'POST', body: JSON.stringify({ displayName: displayName.trim(), command: command.trim(), launcherType, defaultArgs: [], env: {}, supportsResume }) })
       // Workspace-scoped mode: immediately launch the new agent in that workspace.
       if (workspaceId) {
-        const session = await api<AgentSession>('/api/sessions', { method: 'POST', body: JSON.stringify({ workspaceId, agentDefinitionId: agent.id }) })
+        // Isolated launch: worktree first, then the session points at it.
+        const worktree = isolate
+          ? await api<AgentWorktree>(`/api/workspaces/${workspaceId}/worktrees`, { method: 'POST', body: JSON.stringify({ taskName: taskName.trim(), agentDefinitionId: agent.id }) })
+          : null
+        const session = await api<AgentSession>('/api/sessions', { method: 'POST', body: JSON.stringify({ workspaceId, agentDefinitionId: agent.id, ...(worktree ? { worktreeId: worktree.id } : {}) }) })
         onDone(session ? { id: session.id } : undefined)
       } else {
         onDone(agent ? { id: agent.id } : undefined)
@@ -114,9 +124,24 @@ export function AgentForm({ workspaceName, workspaceId, onDone, onError }: {
         <input type="checkbox" checked={supportsResume} onChange={(event) => setSupportsResume(event.target.checked)} />
         <span>Agent supports session resume (--resume flag)</span>
       </label>
+      {workspaceId && (
+        <div className="form-field">
+          <label className="form-check">
+            <input type="checkbox" checked={isolate} onChange={(event) => setIsolate(event.target.checked)} />
+            <span>Create isolated git worktree (branch <span className="mono">agent/&lt;task&gt;</span>)</span>
+          </label>
+          {isolate && (
+            <label className="form-field">
+              <span>Task name *</span>
+              <input className="form-input mono" value={taskName} onChange={(event) => setTaskName(event.target.value)} placeholder="auth-refactor" />
+            </label>
+          )}
+          {isolate && <div className="form-hint">The agent edits <span className="mono">&lt;repo&gt;-worktrees/&lt;task&gt;</span> on its own branch. Merging stays manual.</div>}
+        </div>
+      )}
       <div className="form-actions">
         <button type="button" className="secondary-button" onClick={() => onDone()}>Cancel</button>
-        <button type="submit" className="primary-button" disabled={busy || !displayName.trim() || !command.trim()}>{busy ? (workspaceId ? 'Creating & launching…' : 'Saving…') : (workspaceId ? 'Create & launch here' : 'Add agent')}</button>
+        <button type="submit" className="primary-button" disabled={busy || !displayName.trim() || !command.trim() || (isolate && !taskName.trim())}>{busy ? (workspaceId ? 'Creating & launching…' : 'Saving…') : (workspaceId ? (isolate ? 'Create worktree & launch' : 'Create & launch here') : 'Add agent')}</button>
       </div>
     </form>
   )

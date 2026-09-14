@@ -10,9 +10,11 @@ import { AgentForm, WorkspaceForm } from '@/components/forms'
 import { ExternalSessionsPanel } from '@/components/external-sessions-panel'
 import { Modal } from '@/components/modal'
 import { SessionDetail } from '@/components/session-detail'
+import { SettingsModal } from '@/components/settings-modal'
 import { TerminalModal } from '@/components/terminal-modal'
 import { api, MANAGER_URL } from '@/lib/api'
 import { fileLabel, formatBytes } from '@/lib/format'
+import { loadNotificationSettings, showDesktopNotification, type NotificationSettings } from '@/lib/notifications'
 import { LIVE_STATUSES, type AgentSession, type ManagerState, type SessionAction, type View } from '@/lib/types'
 
 type Notice = { message: string; tone: 'success' | 'error' }
@@ -32,11 +34,15 @@ export default function Page() {
   const [terminalScope, setTerminalScope] = useState<'workspace' | 'agent'>('workspace')
   const [showWorkspaceForm, setShowWorkspaceForm] = useState(false)
   const [showAgentForm, setShowAgentForm] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   // Data-driven attributes (e.g. disabled={workspaceLiveCount === 0}) can
   // differ between the SSR snapshot and the first client render once
   // /api/state has landed, which trips React hydration. Render a stable
   // loading state until the client has mounted, then swap in the dashboard.
   const [ready, setReady] = useState(false)
+  // Unread-output tracking (spec §14): session ids that produced output since
+  // the user last viewed them. Cleared when a session terminal is opened.
+  const [unreadOutput, setUnreadOutput] = useState<Record<string, true>>({})
   // Modal opened from the workspace panel: create the agent AND launch it here.
   const [showAssignAgent, setShowAssignAgent] = useState(false)
   // Registry rows are informational: clicking selects the agent, launching is explicit.
@@ -46,6 +52,19 @@ export default function Page() {
   const [dragAgentId, setDragAgentId] = useState<string | null>(null)
   const [dropHoverWorkspaceId, setDropHoverWorkspaceId] = useState<string | null>(null)
   const noticeTimer = useRef<number | null>(null)
+  // Latest-value refs for socket handlers that must not re-subscribe (and thus
+  // reconnect) on every state change or terminal open. Updated in effects,
+  // never during render (react-hooks/refs).
+  const stateRef = useRef(state)
+  useEffect(() => { stateRef.current = state })
+  const showTerminalForRef = useRef(showTerminalFor)
+  useEffect(() => { showTerminalForRef.current = showTerminalFor }, [showTerminalFor])
+  // Desktop notification toggles (spec §16): read inside socket handlers via
+  // a ref so toggling never re-subscribes the socket.
+  const notificationSettingsRef = useRef<NotificationSettings>(loadNotificationSettings())
+  useEffect(() => { notificationSettingsRef.current = loadNotificationSettings() }, [showSettings])
+  // Anti-spam: at most one "new output" desktop notification per session/minute.
+  const lastOutputNotifyAt = useRef<Record<string, number>>({})
 
   const flash = useCallback((message: string, tone: Notice['tone'] = 'success') => {
     if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current)
@@ -78,19 +97,64 @@ export default function Page() {
     // on mount) requires storing it in state once.
     setSocket(client)
     client.on('connect', () => { setConnected(true); void safeSync() })
-    client.on('disconnect', () => setConnected(false))
-    // Only re-sync immediately for real lifecycle changes; high-frequency events
+    client.on('disconnect', () => {
+      setConnected(false)
+      if (notificationSettingsRef.current.disconnect) showDesktopNotification('Manager disconnected', 'The local manager WebSocket dropped — reconnecting.')
+    })
+    // Unread-output beacon: any session producing output marks a dot on the
+    // sidebar/workspace cards unless the user is currently viewing it.
+    // The backend ships this on a DEDICATED 'terminal.activity' channel
+    // (it is excluded from manager.event fan-out for bandwidth), so the
+    // listener must subscribe to that channel directly.
+    client.on('terminal.activity', (event: { type?: string; payload?: { sessionId?: string } }) => {
+      const activitySessionId = event?.payload?.sessionId
+      if (typeof activitySessionId !== 'string') return
+      setUnreadOutput((current) => {
+        if (showTerminalForRef.current === activitySessionId) return current
+        if (current[activitySessionId]) return current
+        return { ...current, [activitySessionId]: true }
+      })
+      // Optional per-output desktop notification, throttled per session (§16).
+      if (notificationSettingsRef.current.output && showTerminalForRef.current !== activitySessionId) {
+        const now = Date.now()
+        const last = lastOutputNotifyAt.current[activitySessionId] ?? 0
+        if (now - last > 60_000) {
+          lastOutputNotifyAt.current[activitySessionId] = now
+          const name = stateRef.current?.sessions.find((session) => session.id === activitySessionId)?.display_name ?? 'Agent'
+          showDesktopNotification(name, 'produced new terminal output')
+        }
+      }
+    })
+    // Re-sync immediately for real lifecycle changes; high-frequency events
     // (terminal output, git.changed, resources) are covered by the 30s poll.
-    const lifecycleEvent = (event: { type?: string }) => {
-      if (event && typeof event.type === 'string' && event.type.startsWith('agent.')) void safeSync()
-    }
-    client.on('manager.event', lifecycleEvent)
+    // Exit/crash surface a toast (spec §15): reliable process events only —
+    // never inferred "task completed" from terminal text.
+    client.on('manager.event', (event: { type?: string; payload?: { sessionId?: string; exitCode?: number; launchError?: string } }) => {
+      if (!event || typeof event.type !== 'string' || !event.type.startsWith('agent.')) return
+      if (event.type === 'agent.crashed' || event.type === 'agent.stopped') {
+        const sessionId = event.payload?.sessionId
+        const name = sessionId ? stateRef.current?.sessions.find((session) => session.id === sessionId)?.display_name : undefined
+        const label = name ?? 'Agent session'
+        if (event.type === 'agent.crashed') {
+          // Launch failures publish launchError instead of an exit code (the
+          // process never ran) — surface the real reason, not just "crashed".
+          const exitPart = typeof event.payload?.exitCode === 'number' ? ` (exit ${event.payload.exitCode})` : ''
+          const reason = event.payload?.launchError ? `failed to launch — ${event.payload.launchError}` : `crashed${exitPart}`
+          flash(`${label} ${reason}`, 'error')
+          if (notificationSettingsRef.current.error) showDesktopNotification(label, reason)
+        } else {
+          flash(`${label} exited`)
+          if (notificationSettingsRef.current.exit) showDesktopNotification(label, 'process exited')
+        }
+      }
+      void safeSync()
+    })
     const poll = window.setInterval(() => void safeSync(), 30_000)
     return () => {
       client.close()
       window.clearInterval(poll)
     }
-  }, [safeSync])
+  }, [safeSync, flash])
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -118,6 +182,10 @@ export default function Page() {
   const workspaceRunning = workspaceSessions.filter((session) => session.status === 'RUNNING')
   const workspaceWaiting = workspaceSessions.filter((session) => session.status === 'WAITING' || session.status === 'IDLE')
   const workspaceLiveCount = workspaceSessions.filter((session) => LIVE_STATUSES.includes(session.status)).length
+  // An agent has unread output when any of its workspace sessions does.
+  const hasUnread = useCallback((agentDefinitionId: string) =>
+    workspaceSessions.some((session) => session.agent_definition_id === agentDefinitionId && unreadOutput[session.id]),
+  [workspaceSessions, unreadOutput])
 
   async function launchAgent(agentDefinitionId?: string) {
     try {
@@ -201,7 +269,17 @@ export default function Page() {
     void assignAgent(agentId, workspaceId)
   }
 
-  function openTerminal(id: string) { setActiveSessionId(id); setShowTerminalFor(id) }
+  function openTerminal(id: string) {
+    setActiveSessionId(id)
+    setShowTerminalFor(id)
+    // Viewing the terminal clears its unread-output dot (spec §14).
+    setUnreadOutput((current) => {
+      if (!current[id]) return current
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
+  }
 
   // Opened from the workspace panel: create a new agent and run it in THIS workspace.
   function openAssignAgent() {
@@ -234,8 +312,8 @@ export default function Page() {
 
   return <main className="app-shell">
     {notice && <div className={`toast ${notice.tone === 'error' ? 'toast-error' : ''}`}>{notice.tone === 'error' ? <AlertTriangle /> : <Check />} {notice.message}</div>}
-    <header className="topbar"><div className="brand"><div className="brand-mark"><Command /></div><div><strong>FORGE</strong><span>MISSION CONTROL</span></div></div><div className="command-trigger"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search agents" /></div><div className="topbar-center"><span className={`manager-pulse ${connected ? '' : 'offline'}`} /><span>{connected ? 'Manager online' : 'Manager reconnecting'}</span><span className="topbar-divider" /><span className="mono muted">{MANAGER_URL}</span></div><div className="topbar-actions"><button className={`topbar-nav-button ${showAgentLog ? 'active' : ''}`} onClick={() => setShowAgentLog(true)} title="Agent log"><ScrollText /> Agent log</button><button className="icon-button mobile-menu" onClick={() => setMobileNav(!mobileNav)} aria-label="Toggle navigation"><Menu /></button><button className="icon-button" aria-label="Settings"><Settings2 /></button></div></header>
-    <div className="workspace-layout"><aside className={`sidebar ${mobileNav ? 'sidebar-open' : ''}`}><div className="sidebar-scroll"><div className="section-label"><span>WORKSPACES</span><span>{state.workspaces.length}</span></div>{dragAgentId && <div className="drag-hint">Drop on a workspace to assign</div>}{state.workspaces.map((workspace) => <button key={workspace.id} className={`workspace-item ${workspace.id === activeWorkspaceId ? 'active' : ''} ${dropHoverWorkspaceId === workspace.id ? 'drop-hover' : ''}`} onClick={() => setActiveWorkspaceId(workspace.id)} onDragOver={(event) => { if (!dragAgentId) return; event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDropHoverWorkspaceId(workspace.id) }} onDragLeave={() => setDropHoverWorkspaceId((current) => (current === workspace.id ? null : current))} onDrop={(event) => handleWorkspaceDrop(event, workspace.id)}><span className="workspace-icon cyan"><FolderKanban /></span><span className="workspace-copy"><b>{workspace.name}</b><small>{workspace.git_branch ?? workspace.git_status ?? 'No Git status'}</small></span></button>)}<button className="new-workspace" onClick={() => setShowWorkspaceForm(true)}><Plus /> Add workspace</button><div className="section-label"><span>AGENT REGISTRY</span><span>{state.agentDefinitions.length}</span></div>{filteredAgents.map((agent) => <div className={`agent-config-row ${dragAgentId === agent.id ? 'dragging' : ''}`} key={agent.id} draggable onDragStart={(event) => { event.dataTransfer.setData('application/x-agent-id', agent.id); event.dataTransfer.setData('text/plain', agent.id); event.dataTransfer.effectAllowed = 'copyMove'; setDragAgentId(agent.id) }} onDragEnd={() => { setDragAgentId(null); setDropHoverWorkspaceId(null) }}><button className={`nav-item agent-launch-item ${selectedAgentId === agent.id ? 'selected-agent' : ''}`} onClick={() => setSelectedAgentId(agent.id)} title={`${agent.command} — click to select, use Launch to run it in this workspace`}><Bot /><span className="agent-config-copy"><b>{agent.display_name}</b><small>{fileLabel(agent.command)}</small></span><span className="status-pill">{agent.launcher_type}</span></button><button className="agent-delete-button" onClick={() => void deleteAgent(agent.id, agent.display_name)} aria-label={`Delete ${agent.display_name}`}><X /></button></div>)}<button className="new-workspace" onClick={() => setShowAgentForm(true)}><Plus /> Add agent</button><button className="new-workspace danger-link" onClick={() => void clearAgents()}><X /> Clear all agents</button></div><div className="sidebar-footer"><div className="system-row"><span className="system-icon"><Cpu /></span><div><b>System resources</b><small>{state.system ? `${state.system.cpuPercent.toFixed(0)}% CPU / ${state.system.memoryPercent.toFixed(0)}% RAM` : `${workspaceRunning.length} running processes`}</small></div><span className="resource-health" /></div><div className="resource-bar"><span style={{ width: `${Math.min(100, state.system?.memoryPercent ?? 0)}%` }} /></div><div className="resource-meta"><span>CPU <b>{state.system?.cpuPercent.toFixed(0) ?? 0}%</b></span><span>RAM <b>{formatBytes(state.system?.memoryUsed ?? 0)}</b></span></div></div></aside>
+    <header className="topbar"><div className="brand"><div className="brand-mark"><Command /></div><div><strong>FORGE</strong><span>MISSION CONTROL</span></div></div><div className="command-trigger"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search agents" /></div><div className="topbar-center"><span className={`manager-pulse ${connected ? '' : 'offline'}`} /><span>{connected ? 'Manager online' : 'Manager reconnecting'}</span><span className="topbar-divider" /><span className="mono muted">{MANAGER_URL}</span></div><div className="topbar-actions"><button className={`topbar-nav-button ${showAgentLog ? 'active' : ''}`} onClick={() => setShowAgentLog(true)} title="Agent log"><ScrollText /> Agent log</button><button className="icon-button mobile-menu" onClick={() => setMobileNav(!mobileNav)} aria-label="Toggle navigation"><Menu /></button><button className="icon-button" aria-label="Settings" title="Notification settings" onClick={() => setShowSettings(true)}><Settings2 /></button></div></header>
+    <div className="workspace-layout"><aside className={`sidebar ${mobileNav ? 'sidebar-open' : ''}`}><div className="sidebar-scroll"><div className="section-label"><span>WORKSPACES</span><span>{state.workspaces.length}</span></div>{dragAgentId && <div className="drag-hint">Drop on a workspace to assign</div>}{state.workspaces.map((workspace) => <button key={workspace.id} className={`workspace-item ${workspace.id === activeWorkspaceId ? 'active' : ''} ${dropHoverWorkspaceId === workspace.id ? 'drop-hover' : ''}`} onClick={() => setActiveWorkspaceId(workspace.id)} onDragOver={(event) => { if (!dragAgentId) return; event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDropHoverWorkspaceId(workspace.id) }} onDragLeave={() => setDropHoverWorkspaceId((current) => (current === workspace.id ? null : current))} onDrop={(event) => handleWorkspaceDrop(event, workspace.id)}><span className="workspace-icon cyan"><FolderKanban /></span><span className="workspace-copy"><b>{workspace.name}</b><small>{workspace.git_branch ?? workspace.git_status ?? 'No Git status'}</small></span></button>)}<button className="new-workspace" onClick={() => setShowWorkspaceForm(true)}><Plus /> Add workspace</button><div className="section-label"><span>AGENT REGISTRY</span><span>{state.agentDefinitions.length}</span></div>{filteredAgents.map((agent) => <div className={`agent-config-row ${dragAgentId === agent.id ? 'dragging' : ''}`} key={agent.id} draggable onDragStart={(event) => { event.dataTransfer.setData('application/x-agent-id', agent.id); event.dataTransfer.setData('text/plain', agent.id); event.dataTransfer.effectAllowed = 'copyMove'; setDragAgentId(agent.id) }} onDragEnd={() => { setDragAgentId(null); setDropHoverWorkspaceId(null) }}><button className={`nav-item agent-launch-item ${selectedAgentId === agent.id ? 'selected-agent' : ''}`} onClick={() => setSelectedAgentId(agent.id)} title={`${agent.command} — click to select, use Launch to run it in this workspace`}><Bot /><span className="agent-config-copy"><b>{agent.display_name}</b><small>{fileLabel(agent.command)}</small></span><span className="status-pill">{agent.launcher_type}</span></button><button className="agent-delete-button" onClick={() => void deleteAgent(agent.id, agent.display_name)} aria-label={`Delete ${agent.display_name}`}><X /></button>{hasUnread(agent.id) && <span className="unread-dot" title="New terminal output" />}</div>)}<button className="new-workspace" onClick={() => setShowAgentForm(true)}><Plus /> Add agent</button><button className="new-workspace danger-link" onClick={() => void clearAgents()}><X /> Clear all agents</button></div><div className="sidebar-footer"><div className="system-row"><span className="system-icon"><Cpu /></span><div><b>System resources</b><small>{state.system ? `${state.system.cpuPercent.toFixed(0)}% CPU / ${state.system.memoryPercent.toFixed(0)}% RAM` : `${workspaceRunning.length} running processes`}</small></div><span className="resource-health" /></div><div className="resource-bar"><span style={{ width: `${Math.min(100, state.system?.memoryPercent ?? 0)}%` }} /></div><div className="resource-meta"><span>CPU <b>{state.system?.cpuPercent.toFixed(0) ?? 0}%</b></span><span>RAM <b>{formatBytes(state.system?.memoryUsed ?? 0)}</b></span></div></div></aside>
       <ErrorBoundary>
         {!ready
           ? <section className="main-content"><div className="empty-state">Connecting to manager…</div></section>
@@ -263,7 +341,7 @@ export default function Page() {
                 const latest = live[0] ?? agentSessions[0]
                 const isAssigned = workspaceAssignedAgentIds.has(agent.id)
                 return <div className="workspace-agent-card" key={agent.id}>
-                  <div className="workspace-agent-head"><span className="workspace-icon cyan"><Bot /></span><div className="workspace-agent-copy"><b>{agent.display_name}</b><small>{fileLabel(agent.command)} · {agent.launcher_type}</small></div><span className={`status-pill ${live.length > 0 ? 'live' : ''}`}>{live.length > 0 ? `${live.length} running` : 'idle'}</span>{isAssigned && <button className="agent-delete-button" title="Remove from workspace" aria-label={`Remove ${agent.display_name} from workspace`} onClick={() => activeWorkspaceId && void unassignAgent(activeWorkspaceId, agent.id)}><X /></button>}</div>
+                  <div className="workspace-agent-head"><span className="workspace-icon cyan"><Bot /></span><div className="workspace-agent-copy"><b>{agent.display_name}</b><small>{fileLabel(agent.command)} · {agent.launcher_type}</small></div><span className={`status-pill ${live.length > 0 ? 'live' : ''}`}>{live.length > 0 ? `${live.length} running` : 'idle'}</span>{hasUnread(agent.id) && <span className="unread-dot" title="New terminal output" />}{isAssigned && <button className="agent-delete-button" title="Remove from workspace" aria-label={`Remove ${agent.display_name} from workspace`} onClick={() => activeWorkspaceId && void unassignAgent(activeWorkspaceId, agent.id)}><X /></button>}</div>
                   <div className="workspace-agent-actions"><button className="secondary-button" onClick={() => void launchAgent(agent.id)}><Plus /> Launch</button>                <button className="secondary-button" disabled={!latest} onClick={() => { if (!latest) return; setTerminalScope('agent'); openTerminal(latest.id) }}><SquareTerminal /> Terminal</button></div>
                 </div>
               })}</div>
@@ -279,6 +357,7 @@ export default function Page() {
       {showTerminalFor && <TerminalModal sessions={terminalSessions} activeSessionId={showTerminalFor} socket={socket} workspaceName={activeWorkspace?.name} workspaceAgents={workspaceAgents} scope={terminalScope} onScope={(scope) => setTerminalScope(scope)} onSelect={(id) => { setActiveSessionId(id); setShowTerminalFor(id) }} onClose={() => setShowTerminalFor(null)} onAction={sessionAction} onDetail={(id) => { setShowTerminalFor(null); openSession(id) }} />}
       {showWorkspaceForm && <Modal title="Add workspace" kicker="NEW WORKSPACE" onClose={() => setShowWorkspaceForm(false)}><WorkspaceForm onDone={() => { setShowWorkspaceForm(false); flash('Workspace added'); void safeSync() }} onError={(message) => flash(message, 'error')} /></Modal>}
       {showAgentForm && <Modal title="Add agent" kicker="AGENT REGISTRY" onClose={() => setShowAgentForm(false)}><AgentForm onDone={() => { setShowAgentForm(false); flash('Agent configured'); void safeSync() }} onError={(message) => flash(message, 'error')} /></Modal>}
+      {showSettings && <Modal title="Notifications" kicker="SETTINGS" onClose={() => setShowSettings(false)}><SettingsModal onClose={() => setShowSettings(false)} /></Modal>}
       {showAssignAgent && activeWorkspace && <Modal title={`New agent — ${activeWorkspace.name}`} kicker="THIS WORKSPACE" onClose={() => setShowAssignAgent(false)}><AgentForm workspaceId={activeWorkspace.id} workspaceName={activeWorkspace.name} onDone={(result) => { setShowAssignAgent(false); if (result?.id) openTerminal(result.id); flash('Agent created and launched in this workspace'); void safeSync() }} onError={(message) => flash(message, 'error')} /></Modal>}
     </ErrorBoundary>
   </main>

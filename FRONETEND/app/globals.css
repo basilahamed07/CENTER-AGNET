@@ -140,6 +140,15 @@ button { cursor: pointer; }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .form-check { display: flex; align-items: center; gap: 8px; color: #a9b5c4; font-size: 11px; cursor: pointer; }
 .form-check input { accent-color: #48d5e8; width: 14px; height: 14px; }
+/* Notification permission status row (settings modal). */
+.permission-row { display: flex; align-items: flex-start; gap: 10px; border: 1px solid #243244; border-radius: 7px; padding: 10px 12px; background: #0c1016; }
+.permission-row svg { width: 15px; flex-shrink: 0; margin-top: 1px; color: #6c7a8d; }
+.permission-row.granted { border-color: #245846; background: #0f1d18; }
+.permission-row.granted svg { color: #4dd4a4; }
+.permission-row.denied { border-color: #5a3238; background: #211519; }
+.permission-row.denied svg { color: #ed777d; }
+.permission-copy b { display: block; color: #cdd8e4; font-size: 11px; }
+.permission-copy small { display: block; margin-top: 3px; color: #6c7a8d; font-size: 10px; line-height: 1.45; }
 .launcher-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .launcher-option { display: flex; flex-direction: column; gap: 4px; border: 1px solid #2d3948; background: #0c1016; border-radius: 7px; padding: 10px 11px; text-align: left; color: inherit; }
 .launcher-option b { color: #d4dce7; font-size: 11px; }
@@ -199,6 +208,7 @@ button { cursor: pointer; }
 .workspace-agent-copy b { display: block; font-size: 11px; color: #d4dce7; }
 .workspace-agent-copy small { display: block; color: #738195; font-size: 9px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-pill.live { color: #4ed59b; border-color: #2d7663; }
+.unread-dot { width: 7px; height: 7px; border-radius: 50%; background: #29e0ff; box-shadow: 0 0 6px rgba(41,224,255,.8); animation: live-blink 1.6s ease-in-out infinite; flex-shrink: 0; }
 .workspace-agent-actions { display: flex; gap: 8px; }
 .workspace-agent-actions .secondary-button { flex: 1; justify-content: center; padding: 8px 10px; }
 .workspace-agent-actions .secondary-button:disabled { opacity: .4; cursor: default; }

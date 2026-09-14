@@ -163,7 +163,26 @@ export function initDb() {
   db.prepare('CREATE INDEX IF NOT EXISTS idx_assignments_workspace ON workspace_agent_assignments(workspace_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_assignments_agent ON workspace_agent_assignments(agent_definition_id)').run();
 
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS agent_worktrees (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      agent_definition_id TEXT,
+      session_id TEXT,
+      path TEXT NOT NULL UNIQUE,
+      branch TEXT NOT NULL,
+      base_branch TEXT,
+      task_name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      removed_at TEXT,
+      FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+    )
+  `).run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_worktrees_workspace ON agent_worktrees(workspace_id)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_worktrees_session ON agent_worktrees(session_id)').run();
+
   db.prepare("INSERT OR IGNORE INTO migrations (id, name) VALUES (1, 'initial_phase_1_schema')").run();
+  db.prepare("INSERT OR IGNORE INTO migrations (id, name) VALUES (2, 'agent_worktrees')").run();
 
   logger.info('database initialized', { path: DB_PATH });
 }

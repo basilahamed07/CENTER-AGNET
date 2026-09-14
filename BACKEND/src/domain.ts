@@ -78,6 +78,24 @@ export interface WorkspaceAgentAssignment {
   created_at: string;
 }
 
+/**
+ * A git worktree isolating one agent's parallel edits from the main working
+ * tree (spec §17-19). Rows survive removal (removed_at set) so session
+ * history keeps pointing at real work.
+ */
+export interface AgentWorktree {
+  id: string;
+  workspace_id: string;
+  agent_definition_id: string | null;
+  session_id: string | null;
+  path: string;
+  branch: string;
+  base_branch: string | null;
+  task_name: string;
+  created_at: string;
+  removed_at: string | null;
+}
+
 export interface AppEvent<T = unknown> {
   id: string;
   type: string;

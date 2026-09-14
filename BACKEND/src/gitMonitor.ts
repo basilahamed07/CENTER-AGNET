@@ -7,7 +7,8 @@ import { repository } from './repository';
 
 const execFileAsync = promisify(execFile);
 
-function parsePorcelain(output: string) {
+// Exported for tests: porcelain status counting is critical logic (spec §40).
+export function parsePorcelain(output: string) {
   let staged = 0;
   let modified = 0;
   let untracked = 0;

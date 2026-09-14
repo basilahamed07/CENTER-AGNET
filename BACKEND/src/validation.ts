@@ -21,6 +21,17 @@ export const agentCreateSchema = z.object({
 export const launchSessionSchema = z.object({
   workspaceId: z.string().min(1),
   agentDefinitionId: z.string().min(1),
+  /** Optional git worktree: the session runs inside it (spec §18). */
+  worktreeId: z.string().min(1).optional(),
+});
+
+export const worktreeCreateSchema = z.object({
+  taskName: z.string().min(1).max(80),
+  agentDefinitionId: z.string().min(1).optional(),
+});
+
+export const worktreeRemoveSchema = z.object({
+  forceRemove: z.boolean().default(false),
 });
 
 export const assignmentSchema = launchSessionSchema;

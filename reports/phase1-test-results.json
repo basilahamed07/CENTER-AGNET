@@ -1,0 +1,74 @@
+{
+  "generatedAt": "2026-09-15",
+  "environment": { "os": "linux", "node": "v26.8.2", "testBackendPort": 4545, "db": "/tmp/forge-val/manager-test.sqlite" },
+  "baseline": {
+    "branch": "main",
+    "uncommittedFiles": 23,
+    "backendTestsBefore": { "total": 44, "pass": 41, "fail": 0, "skipped": 3 },
+    "frontend": { "typecheck": "clean", "build": "clean" }
+  },
+  "regression": {
+    "backendTestsAfter": { "total": 45, "pass": 42, "fail": 0, "skipped": 3 },
+    "frontend": { "typecheck": "clean", "build": "clean" }
+  },
+  "probe": {
+    "file": "/tmp/forge-val/probe.mjs",
+    "total": 28,
+    "pass": 27,
+    "fail": 1,
+    "note": "The single FAIL was BUG-1 (frontend wiring, fixed in this pass; backend half of the check passed).",
+    "results": "SUMMARY — see report §9/§7/§16 for the full matrix"
+  },
+  "tests": [
+    { "id": "ws-connect", "section": "31", "status": "PASS", "expected": "socket connects to manager", "actual": "socket connected" },
+    { "id": "A-exit0", "section": "20", "status": "PASS", "expected": "STARTING→RUNNING→STOPPED exit 0 + events + output", "actual": "status=STOPPED exit=0 started=true stopped=true output captured (1390ms)" },
+    { "id": "B-concurrent", "section": "20", "status": "PASS", "expected": "two agents RUNNING simultaneously", "actual": "both in runningSessionIds" },
+    { "id": "C-refresh-reconnect", "section": "20", "status": "PASS", "expected": "process survives socket drop; replay on attach", "actual": "running=true during drop; replayed=true" },
+    { "id": "F-beacon-channel", "section": "14/16", "status": "PASS", "expected": "beacon reaches non-attached clients on dedicated channel", "actual": "3 beacons; 0 leaks on manager.event" },
+    { "id": "F-frontend-wiring", "section": "14", "status": "FAIL→FIXED", "expected": "frontend listens on channel backend emits", "actual": "BUG-1: page.tsx listened inside manager.event — fixed in this pass" },
+    { "id": "input-path", "section": "20", "status": "PASS", "expected": "terminal.input reaches PTY", "actual": "GOT:hi echoed" },
+    { "id": "E-fail-exit7", "section": "20", "status": "PASS", "expected": "non-zero exit → CRASHED + event", "actual": "CRASHED exit_code=7 event=true" },
+    { "id": "G-graceful-stop", "section": "20", "status": "PASS", "expected": "stop → STOPPED, no spurious CRASHED", "actual": "http=200 STOPPED crashedEvent=false" },
+    { "id": "WT-non-git", "section": "11/26", "status": "PASS", "expected": "non-git rejected", "actual": "400 Not a git repository" },
+    { "id": "WT-create", "section": "18", "status": "PASS", "expected": "sibling dir + agent/ branch", "actual": "created agent/claude-auth on disk" },
+    { "id": "WT-duplicate", "section": "11", "status": "PASS", "expected": "duplicates rejected", "actual": "400 Branch already exists" },
+    { "id": "WT-status-dirty", "section": "12/26", "status": "PASS", "expected": "dirty + changed files; main repo untouched", "actual": "dirty=true files=[file.txt, agent-new.txt] mainRepoUnchanged=true" },
+    { "id": "WT-diff", "section": "12/21", "status": "PASS", "expected": "tracked + untracked diffs", "actual": "both present" },
+    { "id": "WT-launch-cwd", "section": "9/18", "status": "PASS", "expected": "session cwd = worktree", "actual": "working_directory + pwd output agree" },
+    { "id": "WT-dirty-block", "section": "10/27", "status": "PASS", "expected": "dirty removal BLOCKED", "actual": "400 uncommitted changes" },
+    { "id": "WT-dirty-intact", "section": "10/27", "status": "PASS", "expected": "blocked removal loses nothing", "actual": "files intact" },
+    { "id": "WT-force-remove", "section": "10/23", "status": "PASS", "expected": "explicit force removes; row tombstoned", "actual": "200 removed_at set" },
+    { "id": "INV-launch-ids", "section": "34", "status": "PASS", "expected": "clean 4xx", "actual": "404 NOT_FOUND" },
+    { "id": "INV-ws-path", "section": "34", "status": "PASS", "expected": "clear rejection", "actual": "400 path does not exist" },
+    { "id": "INV-binary", "section": "34", "status": "PASS", "expected": "missing binary rejected pre-spawn", "actual": "400 LAUNCHER_MISSING" },
+    { "id": "INV-stop-id", "section": "34", "status": "PASS", "expected": "clean error, no crash", "actual": "404" },
+    { "id": "INV-branch-sanitize", "section": "11", "status": "PASS", "expected": "hostile names sanitized", "actual": "agent/weird-task__name-99 (was UNIQUE 500 before BUG-2 fix)" },
+    { "id": "WS-malformed", "section": "31", "status": "PASS", "expected": "garbage messages do not crash manager", "actual": "health 200 after abuse" },
+    { "id": "STRESS-12-running", "section": "25", "status": "PASS", "expected": "12 concurrent PTYs all running", "actual": "12/12; 48 beacons; RSS flat ~100MB" },
+    { "id": "STRESS-isolation", "section": "32", "status": "PASS", "expected": "one crash leaves others + manager fine", "actual": "12/12 survivors, health 200" },
+    { "id": "STRESS-teardown", "section": "25", "status": "PASS", "expected": "force-terminate cleans up", "actual": "1 intended session remains" },
+    { "id": "RESTART-reconciliation", "section": "22", "status": "PASS", "expected": "config restored; no false RUNNING; honest state", "actual": "workspaces+agents persisted; interrupted session DISCONNECTED pid=null; no orphans" }
+  ],
+  "cliResumeVerification": {
+    "claude": "VERIFIED --resume <id>",
+    "codex": "VERIFIED resume <id>",
+    "pi": "VERIFIED --session <id>",
+    "gemini": "CORRECTED to none (flag not per-id)",
+    "aider": "CORRECTED to none (flag takes no id)",
+    "goose": "CORRECTED to none (session --resume, name-based)",
+    "opencode": "CORRECTED to none (last-session only)",
+    "continue": "CORRECTED to none (last-session only)"
+  },
+  "bugs": [
+    { "id": "BUG-1", "severity": "HIGH", "status": "FIXED", "summary": "unread-output UI wiring listened on wrong socket channel" },
+    { "id": "BUG-2", "severity": "HIGH", "status": "FIXED", "summary": "worktree re-create same task name → UNIQUE 500 + orphaned checkout" },
+    { "id": "BUG-3", "severity": "MEDIUM", "status": "FIXED", "summary": "5 seeded resume flags wrong; seed never updated existing rows" }
+  ],
+  "scores": {
+    "terminalReliability": 9, "sessionHandling": 9, "workspaceManagement": 9, "gitIsolation": 8,
+    "notifications": 8, "persistence": 9, "errorHandling": 8, "windowsReadiness": 5,
+    "linuxReadiness": 9, "testingQuality": 8, "uiUsability": 7, "overall": 8
+  },
+  "verdict": "PERSONAL DAILY-USE READY",
+  "phase2Gate": "CONDITIONALLY OPEN — complete Windows manual acceptance pass before starting Phase 2"
+}

@@ -11,11 +11,20 @@ import { inputSchema, resizeSchema } from './validation';
 import { startGitMonitor } from './gitMonitor';
 import { logger } from './logger';
 
+// One origin allowlist shared by HTTP CORS and socket.io so REST and WS
+// behave identically (spec §26: local tool, but no open origins).
+export const ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:3002',
+  'http://127.0.0.1:3002',
+];
+
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3002', 'http://127.0.0.1:3002'],
+    origin: ALLOWED_ORIGINS,
     methods: ['GET', 'POST']
   }
 });
@@ -46,7 +55,7 @@ seedAgentDefinitions();
 const events = new EventBus();
 const processManager = new ProcessManager(events);
 
-app.use(cors({ origin: true }));
+app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json());
 
 app.get('/health', (req, res) => {
@@ -66,7 +75,9 @@ io.on('connection', (socket) => {
   const forward = (event: unknown) => {
     if (event && typeof event === 'object' && 'type' in event) {
       const eventType = String(event.type);
-      if (['terminal.output', 'agent.input', 'resource.updated', 'git.changed'].includes(eventType)) return;
+      // terminal.activity is a high-frequency unread-output beacon handled per-room;
+    // it must not fan out to every client as a manager.event.
+    if (['terminal.output', 'terminal.activity', 'agent.input', 'resource.updated', 'git.changed'].includes(eventType)) return;
     }
     socket.emit('manager.event', event);
   };
@@ -111,6 +122,14 @@ io.on('connection', (socket) => {
 events.on('terminal.output', (event) => {
   const envelope = event as { sessionId?: string; payload: unknown };
   if (envelope.sessionId) io.to(`session:${envelope.sessionId}`).emit('terminal.output', envelope);
+});
+
+// Unread-output beacon goes to ALL clients as its own lightweight channel
+// (no terminal bytes, 1/s throttled upstream). Tabs currently viewing the
+// session ignore it client-side, so the dot only marks unwatched agents.
+events.on('terminal.activity', (event) => {
+  const envelope = event as { sessionId?: string };
+  if (envelope.sessionId) io.emit('terminal.activity', { type: 'terminal.activity', payload: { sessionId: envelope.sessionId } });
 });
 
 startGitMonitor(events);

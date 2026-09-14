@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Clock, History, Play, RefreshCw, Search } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { AgentScanReport, DiscoveredSession } from '@/lib/types'
@@ -21,26 +21,60 @@ export function ExternalSessionsPanel({ workspaceId, workspaceName, onResumeStar
   const [loading, setLoading] = useState(false)
   const [query, setQuery] = useState('')
   const [resumingKey, setResumingKey] = useState<string | null>(null)
+  // Workspace id the current sessions/coverage were loaded for. The "scanning"
+  // state while a fetch is in flight is derived in render (see `switching`)
+  // instead of stored, so no effect needs a synchronous setState.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null)
+  // Latest request wins: a workspace switch or rescan supersedes in-flight scans.
+  const requestRef = useRef(0)
 
-  const load = useCallback(async (force = false) => {
+  const fetchSessions = useCallback(
+    (force: boolean) =>
+      api<{ sessions: DiscoveredSession[]; coverage: AgentScanReport[] }>(
+        `/api/workspaces/${workspaceId}/external-sessions${force ? '?force=1' : ''}`,
+      ),
+    [workspaceId],
+  )
+
+  // Initial scan for the selected workspace. All state updates happen in async
+  // callbacks, never synchronously in the effect body (react-hooks/set-state-in-effect).
+  useEffect(() => {
+    const request = ++requestRef.current
+    fetchSessions(false)
+      .then((result) => {
+        if (request !== requestRef.current) return
+        setSessions(result.sessions)
+        setCoverage(result.coverage)
+        setLoadedFor(workspaceId)
+      })
+      .catch(() => {
+        // Manager unreachable or scan failed: the panel is informational —
+        // mark the attempt complete so the empty state replaces the spinner.
+        if (request === requestRef.current) setLoadedFor(workspaceId)
+      })
+  }, [fetchSessions, workspaceId])
+
+  // Rescan is a user event, so state updates here are fine.
+  async function rescan() {
+    const request = ++requestRef.current
     setLoading(true)
     try {
-      const result = await api<{ sessions: DiscoveredSession[]; coverage: AgentScanReport[] }>(
-        `/api/workspaces/${workspaceId}/external-sessions${force ? '?force=1' : ''}`,
-      )
+      const result = await fetchSessions(true)
+      if (request !== requestRef.current) return
       setSessions(result.sessions)
       setCoverage(result.coverage)
+      setLoadedFor(workspaceId)
     } catch {
-      // Manager unreachable or scan failed: show empty state, panel is informational.
+      // Keep previously discovered data; the busy indicator stops below.
     } finally {
       setLoading(false)
     }
-  }, [workspaceId])
+  }
 
-  useEffect(() => {
-    void load()
-  }, [load])
-
+  // True while the data on screen belongs to a different workspace (switch in flight):
+  // stale rows are hidden and the scanning note shows instead.
+  const switching = loadedFor !== workspaceId
+  const scanning = loading || switching
   const visible = sessions.filter((session) => {
     if (!query.trim()) return true
     const haystack = `${session.agent} ${session.title ?? ''} ${session.workspacePath ?? ''}`.toLowerCase()
@@ -86,15 +120,15 @@ export function ExternalSessionsPanel({ workspaceId, workspaceName, onResumeStar
             placeholder="Filter sessions"
             aria-label="Filter external sessions"
           />
-          <button className="secondary-button" onClick={() => void load(true)} disabled={loading}>
+          <button className="secondary-button" onClick={() => void rescan()} disabled={loading}>
             <RefreshCw /> {loading ? 'Scanning…' : 'Rescan'}
           </button>
         </div>
       </div>
 
-      {visible.length === 0 ? (
+      {visible.length === 0 || switching ? (
         <div className="empty-state">
-          {loading
+          {scanning
             ? 'Scanning local agent session stores…'
             : sessions.length === 0
               ? 'No past sessions discovered for this workspace. Agents that have run here before (Claude Code, Codex, Kilo, Pi, …) will appear automatically.'

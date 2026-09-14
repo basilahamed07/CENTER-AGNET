@@ -1,7 +1,17 @@
 import { randomUUID } from 'crypto';
-import type { AgentDefinition, AgentSession, AgentStatus, LauncherType, Workspace, WorkspaceAgentAssignment } from './domain';
+import type { AgentDefinition, AgentSession, AgentStatus, AgentWorktree, LauncherType, Workspace, WorkspaceAgentAssignment } from './domain';
 import { db } from './db';
 import { badRequest, notFound } from './errors';
+
+// Columns updateSession may write. Anything else is rejected instead of
+// being interpolated into SQL (defense in depth — callers are internal,
+// but a typo'd key should fail loudly, not create an injection-shaped bug).
+const SESSION_MUTABLE_COLUMNS = new Set([
+  'status', 'process_id', 'parent_process_id', 'agent_session_id',
+  'started_at', 'stopped_at', 'last_activity_at', 'last_terminal_activity_at',
+  'exit_code', 'resume_capability', 'metadata_json', 'cpu', 'memory',
+  'stuck_score', 'stuck_confidence',
+]);
 
 export const repository = {
   listWorkspaces(): Workspace[] {
@@ -118,6 +128,9 @@ export const repository = {
   updateSession(id: string, fields: Record<string, unknown>): AgentSession {
     const entries = Object.entries(fields);
     if (entries.length === 0) return this.getSession(id);
+    for (const [key] of entries) {
+      if (!SESSION_MUTABLE_COLUMNS.has(key)) throw new Error(`updateSession: illegal column "${key}"`);
+    }
     const setClause = entries.map(([key]) => `${key} = @${key}`).join(', ');
     db.prepare(`UPDATE agent_sessions SET ${setClause} WHERE id = @id`).run({ id, ...fields });
     return this.getSession(id);
@@ -185,6 +198,88 @@ export const repository = {
     db.prepare('DELETE FROM session_events').run();
     db.prepare('DELETE FROM agent_sessions').run();
     return { cleared: true };
+  },
+
+  // ---- Worktrees (spec §18-23) -------------------------------------------
+
+  createWorktreeRecord(input: {
+    workspaceId: string;
+    agentDefinitionId: string | null;
+    sessionId: string | null;
+    path: string;
+    branch: string;
+    baseBranch: string | null;
+    taskName: string;
+  }): AgentWorktree {
+    // Rows are tombstoned on removal (removed_at), not deleted, so session
+    // history keeps pointing at real work. The path column is UNIQUE, so a
+    // historical row for the SAME directory must be renamed out of the way
+    // before a new row can claim it — otherwise re-creating a worktree with
+    // the same task name dies on a raw UNIQUE constraint error (spec §11:
+    // stale worktree metadata must be handled, not surfaced as a 500).
+    const historical = db.prepare(
+      'SELECT id FROM agent_worktrees WHERE path = ? AND removed_at IS NOT NULL',
+    ).get(input.path) as { id: string } | undefined;
+    if (historical) {
+      db.prepare('UPDATE agent_worktrees SET path = ? WHERE id = ?').run(
+        `${input.path} (removed ${new Date().toISOString()})`,
+        historical.id,
+      );
+    }
+    const id = randomUUID();
+    db.prepare(`
+      INSERT INTO agent_worktrees (id, workspace_id, agent_definition_id, session_id, path, branch, base_branch, task_name)
+      VALUES (@id, @workspaceId, @agentDefinitionId, @sessionId, @path, @branch, @baseBranch, @taskName)
+    `).run({
+      id,
+      workspaceId: input.workspaceId,
+      agentDefinitionId: input.agentDefinitionId,
+      sessionId: input.sessionId,
+      path: input.path,
+      branch: input.branch,
+      baseBranch: input.baseBranch,
+      taskName: input.taskName,
+    });
+    return this.getWorktree(id);
+  },
+
+  getWorktree(id: string): AgentWorktree {
+    const row = db.prepare('SELECT * FROM agent_worktrees WHERE id = ?').get(id) as AgentWorktree | undefined;
+    if (!row) throw notFound('Worktree');
+    return row;
+  },
+
+  listWorktrees(workspaceId: string): AgentWorktree[] {
+    return db.prepare('SELECT * FROM agent_worktrees WHERE workspace_id = ? AND removed_at IS NULL ORDER BY created_at DESC').all(workspaceId) as AgentWorktree[];
+  },
+
+  /**
+   * A historical active row whose directory vanished from disk (deleted by
+   * hand, tmp cleanup, ...) must not block re-creating that worktree forever.
+   * Tombstone it so the path frees up; the work is simply gone — that is
+   * reality, and the row must reflect it.
+   */
+  reconcileMissingWorktree(path: string): boolean {
+    const stale = db.prepare(
+      'SELECT id FROM agent_worktrees WHERE path = ? AND removed_at IS NULL',
+    ).get(path) as { id: string } | undefined;
+    if (!stale) return false;
+    db.prepare('UPDATE agent_worktrees SET removed_at = CURRENT_TIMESTAMP WHERE id = ?').run(stale.id);
+    return true;
+  },
+
+  markWorktreeRemoved(id: string): AgentWorktree {
+    db.prepare('UPDATE agent_worktrees SET removed_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+    return this.getWorktree(id);
+  },
+
+  linkWorktreeSession(id: string, sessionId: string) {
+    db.prepare('UPDATE agent_worktrees SET session_id = ? WHERE id = ?').run(sessionId, id);
+  },
+
+  findWorktreeBySession(sessionId: string): AgentWorktree | null {
+    const row = db.prepare('SELECT * FROM agent_worktrees WHERE session_id = ? AND removed_at IS NULL ORDER BY created_at DESC LIMIT 1').get(sessionId) as AgentWorktree | undefined;
+    return row ?? null;
   },
 
   setSessionStatus(id: string, status: AgentStatus, fields: Record<string, unknown> = {}) {
