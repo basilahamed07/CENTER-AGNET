@@ -142,3 +142,65 @@ export interface AgentScanReport {
   basePaths: string[]
   note?: string
 }
+
+// ---- Phase 2: Advanced Coding (goal orchestration) ------------------------
+
+export type GoalStatus =
+  | 'draft' | 'planning' | 'awaiting_plan_approval' | 'ready' | 'running'
+  | 'verifying' | 'awaiting_review' | 'merging' | 'complete' | 'failed' | 'cancelled'
+
+export type GoalTaskStatus =
+  | 'blocked' | 'ready' | 'assigned' | 'running' | 'verifying'
+  | 'done' | 'failed' | 'dead' | 'cancelled'
+
+export interface Goal {
+  id: string
+  workspace_id: string
+  title: string
+  description: string
+  status: GoalStatus
+  planner_definition_id: string | null
+  planner_session_id: string | null
+  plan_json: string | null
+  concurrency_limit: number
+  attempt_budget: number
+  reviews_enabled: number
+  autonomy: 'gated' | 'semi' | 'auto'
+  failed_attempts: number
+  created_at: string
+  updated_at: string
+}
+
+export interface GoalTask {
+  id: string
+  goal_id: string
+  plan_key: string
+  title: string
+  description: string
+  kind: string
+  risk: string
+  depends_on_json: string
+  status: GoalTaskStatus
+  attempts: number
+  assigned_definition_id: string | null
+  session_id: string | null
+  worktree_id: string | null
+  branch: string | null
+  verification_json: string | null
+  failure_json: string | null
+}
+
+export interface GoalEvent {
+  id: string
+  goal_id: string
+  task_id: string | null
+  type: string
+  payload_json: string
+  created_at: string
+}
+
+export interface GoalDetail {
+  goal: Goal
+  tasks: GoalTask[]
+  events: GoalEvent[]
+}

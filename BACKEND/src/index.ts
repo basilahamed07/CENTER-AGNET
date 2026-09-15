@@ -6,6 +6,10 @@ import { seedAgentDefinitions } from './agentSeed';
 import { initDb, markInterruptedSessionsResumable } from './db';
 import { EventBus } from './eventBus';
 import { createApiRouter, errorMiddleware } from './routes';
+import { Orchestrator } from './orchestrator';
+import { createOrchestratorRouter } from './orchestratorRoutes';
+import { goalRepository } from './goalRepository';
+import { repository } from './repository';
 import { ProcessManager } from './processManager';
 import { inputSchema, resizeSchema } from './validation';
 import { startGitMonitor } from './gitMonitor';
@@ -54,6 +58,30 @@ seedAgentDefinitions();
 
 const events = new EventBus();
 const processManager = new ProcessManager(events);
+// Phase 2 orchestration (docs/PHASE_2_ARCHITECTURE.md). Layered OVER Phase 1:
+// goals drive Phase-1 sessions/worktrees; Phase-1 behavior is unchanged.
+const orchestrator = new Orchestrator(events, processManager);
+
+// Goal state reconciliation on boot: live task sessions were reconciled to
+// DISCONNECTED/RESUMABLE by Phase-1 boot logic; mirror that on their tasks.
+function reconcileGoalTasksOnBoot() {
+  for (const goal of goalRepository.listGoals()) {
+    for (const task of goalRepository.listTasks(goal.id)) {
+      if (['running', 'assigned'].includes(task.status) && task.session_id) {
+        try {
+          const session = repository.getSession(task.session_id);
+          if (!['RUNNING', 'STARTING'].includes(session.status)) {
+            goalRepository.updateTask(task.id, { status: 'failed', failure_json: JSON.stringify({ bootReconcile: session.status }) });
+            goalRepository.recordEvent(goal.id, 'goal.task_failed', { reason: 'manager restarted while task was running' }, task.id);
+          }
+        } catch {
+          goalRepository.updateTask(task.id, { status: 'failed', failure_json: JSON.stringify({ bootReconcile: 'session gone' }) });
+        }
+      }
+    }
+  }
+}
+reconcileGoalTasksOnBoot();
 
 app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json());
@@ -63,6 +91,7 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/api', createApiRouter(processManager));
+app.use('/api/orchestrator', createOrchestratorRouter(orchestrator));
 app.use(errorMiddleware);
 
 io.on('connection', (socket) => {
@@ -130,6 +159,17 @@ events.on('terminal.output', (event) => {
 events.on('terminal.activity', (event) => {
   const envelope = event as { sessionId?: string };
   if (envelope.sessionId) io.emit('terminal.activity', { type: 'terminal.activity', payload: { sessionId: envelope.sessionId } });
+});
+
+// Phase-2 task exit handling: mirror agent.stopped/crashed into goal tasks.
+// Phase-1's own listeners are untouched; this is an additional subscriber.
+events.on('agent.stopped', (event) => {
+  const envelope = event as { sessionId?: string; payload?: { exitCode?: number } };
+  if (envelope.sessionId) orchestrator.onSessionExit(envelope.sessionId, envelope.payload?.exitCode ?? 0, false);
+});
+events.on('agent.crashed', (event) => {
+  const envelope = event as { sessionId?: string; payload?: { exitCode?: number } };
+  if (envelope.sessionId) orchestrator.onSessionExit(envelope.sessionId, envelope.payload?.exitCode ?? -1, true);
 });
 
 startGitMonitor(events);

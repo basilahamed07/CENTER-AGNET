@@ -1,8 +1,13 @@
 # FORGE Phase 2 — Agentic Orchestration Architecture (DESIGN ONLY)
 
-> **STATUS: DESIGN DOCUMENT — NOT IMPLEMENTED.**
+> **STATUS: DESIGN DOCUMENT — PARTIALLY IMPLEMENTED.**
 >
-> This file specifies Phase 2 in full detail. **No Phase-2 code exists in this repository.**
+> Implemented so far (2026-09-15, validated by unit suite + live fake-agent E2E probe):
+> **P2-1** (tables, goal CRUD, timeline, Goals panel) and the **planning portion of P2-2**
+> (per-goal planner, deterministic plan extraction + validation, Gate 1) plus manual task
+> launch with Phase-1 worktree isolation and exit classification with the hard budget stop.
+> NOT yet implemented: auto-execution scheduler/TaskQueue/AssignmentService/Supervisor (P2-3),
+> verification + review flow (P2-4), MergeGate + Gate 2 + autonomy dial (P2-5), polish (P2-6).
 > Per `reports/PHASE_1_VALIDATION_REPORT.md` (§24 + Phase-2 gate), implementation is **gated** on:
 >
 > 1. ✅ Phase-1 validation passed on Linux — 8/10, PERSONAL DAILY-USE READY

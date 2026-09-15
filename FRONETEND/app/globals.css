@@ -297,3 +297,31 @@ button { cursor: pointer; }
   border-top: 1px dashed rgba(83, 130, 143, 0.4);
   font-size: 0.72rem; opacity: 0.6;
 }
+
+/* ===== Phase 2: Advanced Coding (goals) ===== */
+.goals-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 0; width: 100%; max-width: 1720px; margin: 0 auto; padding: 22px 26px 30px; align-items: start; }
+.goals-list { display: flex; flex-direction: column; gap: 6px; padding-right: 18px; border-right: 1px solid #1d2631; min-height: 60vh; }
+.goal-item { display: flex; align-items: center; gap: 9px; border: 0; background: transparent; color: var(--foreground); text-align: left; padding: 10px 12px; border-radius: 7px; cursor: pointer; }
+.goal-item:hover { background: #131a24; }
+.goal-item.active { background: #14232b; outline: 1px solid #1f5665; }
+.goal-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.goal-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.goal-copy b { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goal-copy small { color: #6c7a8d; font-size: 9px; }
+.goal-create-form { display: flex; flex-direction: column; gap: 8px; border: 1px solid #243244; border-radius: 8px; padding: 12px; background: #0c1016; margin-top: 4px; }
+.goal-detail { padding-left: 18px; min-width: 0; }
+.goal-detail .mission-banner { margin-bottom: 14px; }
+.goal-tasks { display: flex; flex-direction: column; }
+.goal-task-row { display: flex; align-items: center; gap: 12px; padding: 11px 4px; border-bottom: 1px solid #1b2430; }
+.goal-task-row:last-child { border-bottom: 0; }
+.goal-task-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.goal-task-copy b { font-size: 12px; }
+.goal-task-copy small { color: #6c7a8d; font-size: 9px; }
+.goal-task-row .form-input { padding: 6px 9px; font-size: 11px; }
+.goal-task-row .secondary-button { padding: 6px 10px; }
+.goal-timeline { display: flex; flex-direction: column; gap: 5px; padding-top: 4px; }
+.goal-event-row { display: flex; align-items: baseline; gap: 10px; font-size: 10px; color: #8b97a8; }
+.goal-event-row code { color: #5dd9e8; font-size: 9px; }
+.goal-event-row span { color: #536173; font-size: 9px; flex-shrink: 0; }
+.goal-event-row small { color: #5d6b7e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 900px) { .goals-layout { grid-template-columns: 1fr; } .goals-list { border-right: 0; padding-right: 0; border-bottom: 1px solid #1d2631; padding-bottom: 12px; } .goal-detail { padding-left: 0; } }

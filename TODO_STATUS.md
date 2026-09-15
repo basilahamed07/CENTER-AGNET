@@ -1,6 +1,6 @@
 # Agent Control Center Status
 
-Last updated: 2026-09-08
+Last updated: 2026-09-15
 
 ## Completion
 
@@ -68,6 +68,18 @@ Last updated: 2026-09-08
 - Session detail view (2026-09-09):
   - Individual session page with metadata table, live terminal, and lifecycle event log.
   - New backend endpoint `GET /api/sessions/:id/events`.
+- Phase-2 orchestration increment (2026-09-15, P2-1 + planning per `docs/PHASE_2_ARCHITECTURE.md`):
+  - Goals, goal tasks, and goal timeline persisted (new SQLite tables + migration 3).
+  - REST API under `/api/orchestrator` (create/plan/extract/approve/launch/retry/cancel/delete).
+  - AI planning via a per-goal planner agent (Gate 1); deterministic forge-plan extraction
+    (LAST fence wins, prompt-example guard) — no LLM status inference.
+  - Manual task launch: worktree-per-task via Phase-1 worktree manager; task brief streamed
+    through the PTY.
+  - Exit classification tied to Phase-1 session events: done/failed/dead, dependency
+    unblocking, and the goal-level hard attempt-budget stop.
+  - Goals panel + Gate-1 plan editor in the frontend.
+  - Verified: backend suite 55 tests (52 pass, 3 platform skips), frontend tsc+build clean,
+    live E2E probe 23/23 with fake agents on a real backend.
 
 ## Current Limitation
 

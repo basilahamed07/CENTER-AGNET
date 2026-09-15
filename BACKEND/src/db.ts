@@ -181,8 +181,69 @@ export function initDb() {
   db.prepare('CREATE INDEX IF NOT EXISTS idx_worktrees_workspace ON agent_worktrees(workspace_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_worktrees_session ON agent_worktrees(session_id)').run();
 
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS goals (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft',
+      planner_definition_id TEXT,
+      planner_session_id TEXT,
+      plan_json TEXT,
+      concurrency_limit INTEGER NOT NULL DEFAULT 3,
+      attempt_budget INTEGER NOT NULL DEFAULT 10,
+      reviews_enabled INTEGER NOT NULL DEFAULT 1,
+      autonomy TEXT NOT NULL DEFAULT 'gated',
+      failed_attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(workspace_id) REFERENCES workspaces(id)
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS goal_tasks (
+      id TEXT PRIMARY KEY,
+      goal_id TEXT NOT NULL,
+      plan_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      kind TEXT NOT NULL DEFAULT 'code',
+      risk TEXT NOT NULL DEFAULT 'medium',
+      depends_on_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'blocked',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      assigned_definition_id TEXT,
+      session_id TEXT,
+      worktree_id TEXT,
+      branch TEXT,
+      verification_json TEXT,
+      failure_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(goal_id) REFERENCES goals(id),
+      UNIQUE(goal_id, plan_key)
+    )
+  `).run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_goal_tasks_goal ON goal_tasks(goal_id)').run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS goal_events (
+      id TEXT PRIMARY KEY,
+      goal_id TEXT NOT NULL,
+      task_id TEXT,
+      type TEXT NOT NULL,
+      payload_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(goal_id) REFERENCES goals(id)
+    )
+  `).run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_goal_events_goal ON goal_events(goal_id, created_at)').run();
+
   db.prepare("INSERT OR IGNORE INTO migrations (id, name) VALUES (1, 'initial_phase_1_schema')").run();
   db.prepare("INSERT OR IGNORE INTO migrations (id, name) VALUES (2, 'agent_worktrees')").run();
+  db.prepare("INSERT OR IGNORE INTO migrations (id, name) VALUES (3, 'goal_orchestration')").run();
 
   logger.info('database initialized', { path: DB_PATH });
 }
